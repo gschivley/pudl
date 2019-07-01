@@ -8,8 +8,26 @@ a parameterized fixture that has session scope.
 import logging
 import pytest
 from scipy import stats
+import pudl.constants as pc
+import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+
+@pytest.mark.ferc1
+@pytest.mark.post_etl
+@pytest.mark.parametrize("table_name", pc.pudl_tables["ferc1"])
+def test_record_id_dupes(pudl_engine, table_name):
+    """Verify that the generated ferc1 record_ids are unique."""
+    table = pd.read_sql(table_name, pudl_engine)
+    n_dupes = table.record_id.duplicated().values.sum()
+    logger.info(f"{n_dupes} duplicate record_ids found in {table_name}")
+
+    if n_dupes:
+        dupe_ids = (table.record_id[table.record_id.duplicated()].values)
+        raise AssertionError(
+            f"{n_dupes} duplicate record_ids found in {table_name}: {dupe_ids}."
+        )
 
 
 @pytest.mark.ferc1
@@ -23,11 +41,80 @@ def test_pu_ferc1(pudl_out_ferc1):
 
 @pytest.mark.ferc1
 @pytest.mark.post_etl
-def test_steam_ferc1(pudl_out_ferc1):
+def test_steam_ferc1_trivial(pudl_out_ferc1):
     """Test output routines for tables from FERC Form 1."""
     logger.info("Compiling FERC Form 1 steam plants table...")
-    logger.info(f"{len(pudl_out_ferc1.plants_steam_ferc1())} "
-                f"steam plant records found.")
+    logger.info(
+        f"{len(pudl_out_ferc1.plants_steam_ferc1())} steam plant "
+        f"records found."
+    )
+
+
+@pytest.mark.ferc1
+@pytest.mark.post_etl
+@pytest.mark.xfail
+def test_steam_ferc1_duplicate_years_in_plant_id_ferc1(pudl_out_ferc1):
+    """
+    Test that we have no duplicate years within any plant_id_ferc1.
+
+    Test to make sure that we don't have any plant_id_ferc1 time series
+    which include more than one record from a given year. Fail the test
+    if we find such cases (which... we do, as of writing).
+    """
+    steam_df = pudl_out_ferc1.plants_steam_ferc1()
+    year_dupes = (
+        steam_df.
+        groupby(['plant_id_ferc1', 'report_year'])['utility_id_ferc1'].
+        count().
+        reset_index().
+        rename(columns={'utility_id_ferc1': 'year_dupes'}).
+        query('year_dupes>1')
+    )
+    for dupe in year_dupes.itertuples():
+        logger.error(
+            f"Found report_year={dupe.report_year} "
+            f"{dupe.year_dupes} times in "
+            f"plant_id_ferc1={dupe.plant_id_ferc1}"
+        )
+    if len(year_dupes) != 0:
+        raise AssertionError(
+            f"Found {len(year_dupes)} duplicate years in FERC1 "
+            f"plant ID time series"
+        )
+
+
+@pytest.mark.ferc1
+@pytest.mark.post_etl
+@pytest.mark.xfail
+def test_steam_ferc1_plant_id_clash(pudl_out_ferc1):
+    """
+    Test for FERC & PUDL Plant ID consistency.
+
+    Each PUDL Plant ID may contain several FERC Plant IDs, but one FERC Plant
+    ID should only ever appear within a single PUDL Plant ID. Test this
+    assertion and fail if it is untrue (as... we know it is right now).
+    """
+    steam_df = pudl_out_ferc1.plants_steam_ferc1()
+    bad_plant_ids_ferc1 = (
+        steam_df[['plant_id_pudl', 'plant_id_ferc1']].
+        drop_duplicates().
+        groupby('plant_id_ferc1').
+        count().
+        rename(columns={'plant_id_pudl': 'pudl_id_count'}).
+        query('pudl_id_count>1').
+        reset_index().
+        plant_id_ferc1.values.tolist()
+    )
+    if bad_plant_ids_ferc1:
+        bad_records = steam_df[steam_df.plant_id_ferc1.
+                               isin(bad_plant_ids_ferc1)]
+        bad_plant_ids_pudl = bad_records.plant_id_pudl.unique().tolist()
+        raise AssertionError(
+            f"Found {len(bad_plant_ids_ferc1)} plant_id_ferc1 values "
+            f"associated with {len(bad_plant_ids_pudl)} non-unique "
+            f"plant_id_pudl values.\nplant_id_ferc1: {bad_plant_ids_ferc1}\n"
+            f"plant_id_pudl: {bad_plant_ids_pudl}."
+        )
 
 
 @pytest.mark.ferc1
@@ -40,12 +127,18 @@ def test_fuel_ferc1(pudl_out_ferc1):
 
 @pytest.mark.ferc1
 @pytest.mark.post_etl
-def test_fbp_ferc1_missing_mmbtu(pudl_out_ferc1):
+def test_fbp_ferc1_trivial(pudl_out_ferc1):
     """Test output routines for tables from FERC Form 1."""
     logger.info("Compiling FERC Form 1 Fuel by Plant table...")
     fbp_ferc1 = pudl_out_ferc1.fbp_ferc1()
     logger.info(f"{len(fbp_ferc1)} fuel by plant records found")
 
+
+@pytest.mark.ferc1
+@pytest.mark.post_etl
+def test_fbp_ferc1_missing_mmbtu(pudl_out_ferc1):
+    """Test output routines for tables from FERC Form 1."""
+    fbp_ferc1 = pudl_out_ferc1.fbp_ferc1()
     missing_mmbtu_pct = (fbp_ferc1.filter(like="fraction_mmbtu").
                          sum(axis=1, skipna=True).
                          pipe(stats.percentileofscore, 0.999999))

@@ -10,7 +10,12 @@ import pudl
 logger = logging.getLogger(pudl.__name__)
 logger.setLevel(logging.INFO)
 handler = logging.StreamHandler()
-formatter = logging.Formatter('%(message)s')
+formatter = logging.Formatter(
+    # More extensive test-like formatter...
+    '%(asctime)s [%(levelname)8s] %(name)s:%(lineno)s %(message)s',
+    # This is the datetime format string.
+    "%Y-%m-%d %H:%M:%S"
+)
 handler.setFormatter(formatter)
 logger.addHandler(handler)
 
@@ -57,6 +62,7 @@ def main():
                       eia860_years=settings_init['eia860_years'],
                       epacems_years=settings_init['epacems_years'],
                       epacems_states=settings_init['epacems_states'],
+                      epaipm_tables=settings_init['epaipm_tables'],
                       pudl_testing=settings_init['pudl_testing'],
                       ferc1_testing=settings_init['ferc1_testing'],
                       csvdir=settings_init['csvdir'],

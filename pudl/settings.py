@@ -12,7 +12,7 @@ from pudl import __file__ as pudl_pkg_file
 PUDL_DIR = os.path.dirname(os.path.dirname(pudl_pkg_file))
 
 
-def settings_init(settings_file="settings.yml"):
+def settings_init(settings_file="settings_init_pudl_default.yml"):
     with open(os.path.join(PUDL_DIR, 'scripts', settings_file), "r") as f:
         settings_out = yaml.safe_load(f)
 
@@ -31,9 +31,14 @@ SETTINGS['eia860_data_dir'] = os.path.join(
     SETTINGS['data_dir'], 'eia', 'form860')
 SETTINGS['epacems_data_dir'] = os.path.join(
     SETTINGS['data_dir'], 'epa', 'cems')
+SETTINGS['epaipm_data_dir'] = os.path.join(
+    SETTINGS['data_dir'], 'epa', 'ipm')
 SETTINGS['test_dir'] = os.path.join(SETTINGS['pudl_dir'], 'test')
 SETTINGS['docs_dir'] = os.path.join(SETTINGS['pudl_dir'], 'docs')
 SETTINGS['csvdir'] = os.path.join(SETTINGS['pudl_dir'], 'results', 'csvdump')
+
+# Location of small data files that are not easy to download (e.g. from a PDF)
+SETTINGS['pudl_data_dir'] = os.path.join(SETTINGS['data_dir'], 'pudl')
 
 
 # These DB connection dictionaries are used by sqlalchemy.URL()

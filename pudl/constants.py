@@ -461,7 +461,7 @@ cpi_plant_kind_strings = {
 # conventional (e.g. "conventional full") and outdoor (e.g. "outdoor full"
 # and "outdoor hrsg") are included.
 
-ferc1_construction_type_outdoor = [
+ferc1_const_type_outdoor = [
     'outdoor', 'outdoor boiler', 'full outdoor', 'outdoor boiler',
     'outdoor boilers', 'outboilers', 'fuel outdoor', 'full outdoor',
     'outdoors', 'outdoor', 'boiler outdoor& full', 'boiler outdoor&full',
@@ -477,7 +477,7 @@ ferc1_construction_type_outdoor = [
     'semi - outdoor'
 ]
 
-ferc1_construction_type_conventional = [
+ferc1_const_type_conventional = [
     'conventional', 'conventional', 'conventional boiler', 'conv-b',
     'conventionall', 'convention', 'conventional', 'coventional',
     'conven full boiler', 'c0nventional', 'conventtional', 'convential'
@@ -487,9 +487,9 @@ ferc1_construction_type_conventional = [
 # Making a dictionary of lists from the lists of construction_type strings to
 # create a dictionary of construction type lists.
 
-ferc1_construction_type_strings = {
-    'outdoor': ferc1_construction_type_outdoor,
-    'conventional': ferc1_construction_type_conventional
+ferc1_const_type_strings = {
+    'outdoor': ferc1_const_type_outdoor,
+    'conventional': ferc1_const_type_conventional
 }
 
 ferc1_power_purchase_type = {
@@ -727,11 +727,19 @@ eia923_pudl_tables = ('generation_fuel_eia923',
                       'coalmine_eia923',
                       'fuel_receipts_costs_eia923')
 
+epaipm_pudl_tables = (
+    'transmission_single_ipm',
+    'transmission_joint_ipm',
+    'load_curves_ipm',
+    'plant_region_map_ipm',
+)
+
 # List of entity tables
 entity_tables = ['utilities_entity_eia',
                  'plants_entity_eia',
                  'generators_entity_eia',
-                 'boilers_entity_eia']
+                 'boilers_entity_eia',
+                 'regions_entity_ipm',]
 
 # 'stocks_eia923'
 
@@ -1535,8 +1543,8 @@ entities = {
          'startup_source_code_1', 'startup_source_code_2',
          'startup_source_code_3', 'startup_source_code_4',
          'time_cold_shutdown_full_load_code', 'syncronized_transmission_grid',
-         'turbines_num', 'operational_status_code', 'planned_modifications',
-         'planned_net_summer_capacity_uprate_mw',
+         'turbines_num', 'operational_status_code', 'operational_status',
+         'planned_modifications', 'planned_net_summer_capacity_uprate_mw',
          'planned_net_winter_capacity_uprate_mw', 'planned_new_capacity_mw',
          'planned_uprate_date', 'planned_net_summer_capacity_derate_mw',
          'planned_net_winter_capacity_derate_mw', 'planned_derate_date',
@@ -1556,10 +1564,11 @@ entities = {
     'utilities': [  # base cols
         ['utility_id_eia'],
         # static cols
-        ['utility_name', 'street_address', 'city', 'state', 'zip_code',
+        ['utility_name',
          'entity_type'],
         # annual cols
-        ['plants_reported_owner', 'plants_reported_operator',
+        ['street_address', 'city', 'state', 'zip_code',
+         'plants_reported_owner', 'plants_reported_operator',
          'plants_reported_asset_manager', 'plants_reported_other_relationship',
          ],
         # need type fixing
@@ -1678,12 +1687,114 @@ epacems_additional_plant_info_file = os.path.join(
     "plant_info_for_additional_cems_plants.csv"
 )
 
+files_epaipm = (
+    'transmission_single_ipm',
+    'transmission_joint_ipm'
+    'load_curves_ipm',
+    'plant_region_map_ipm',
+)
+
+files_dict_epaipm = {
+    'transmission_single_ipm': '*table_3-21*',
+    'transmission_joint_ipm': '*transmission_joint_ipm*',
+    'load_curves_ipm': '*table_2-2_*',
+    'plant_region_map_ipm': '*needs_v6*',
+}
+
+epaipm_url_ext = {
+    'transmission_single_ipm': 'table_3-21_annual_transmission_capabilities_of_u.s._model_regions_in_epa_platform_v6_-_2021.xlsx',
+    'load_curves_ipm': 'table_2-2_load_duration_curves_used_in_epa_platform_v6.xlsx',
+    'plant_region_map_ipm': 'needs_v6_november_2018_reference_case_0.xlsx',
+}
+
+read_excel_epaipm_dict = {
+    'transmission_single_ipm': dict(
+        skiprows=3,
+        usecols='B:F',
+        index_col=[0, 1],
+    ),
+    'transmission_joint_ipm': {},
+    'load_curves_ipm': dict(
+        skiprows=3,
+        usecols='B:AB',
+    ),
+    'plant_region_map_ipm_active': dict(
+        sheet_name='NEEDS v6_Active',
+        usecols='C,I',
+    ),
+    'plant_region_map_ipm_retired': dict(
+        sheet_name='NEEDS v6_Retired_Through2021',
+        usecols='C,I',
+    ),
+}
+
+epaipm_region_names = [
+    'ERC_PHDL', 'ERC_REST', 'ERC_FRNT', 'ERC_GWAY', 'ERC_WEST',
+    'FRCC', 'NENG_CT', 'NENGREST', 'NENG_ME', 'MIS_AR', 'MIS_IL',
+    'MIS_INKY', 'MIS_IA', 'MIS_MIDA', 'MIS_LA', 'MIS_LMI', 'MIS_MNWI',
+    'MIS_D_MS', 'MIS_MO', 'MIS_MAPP', 'MIS_AMSO', 'MIS_WOTA',
+    'MIS_WUMS', 'NY_Z_A', 'NY_Z_B', 'NY_Z_C&E', 'NY_Z_D', 'NY_Z_F',
+    'NY_Z_G-I', 'NY_Z_J', 'NY_Z_K', 'PJM_West', 'PJM_AP', 'PJM_ATSI',
+    'PJM_COMD', 'PJM_Dom', 'PJM_EMAC', 'PJM_PENE', 'PJM_SMAC',
+    'PJM_WMAC', 'S_C_KY', 'S_C_TVA', 'S_D_AECI', 'S_SOU', 'S_VACA',
+    'SPP_NEBR', 'SPP_N', 'SPP_SPS', 'SPP_WEST', 'SPP_KIAM', 'SPP_WAUE',
+    'WECC_AZ', 'WEC_BANC', 'WECC_CO', 'WECC_ID', 'WECC_IID',
+    'WEC_LADW', 'WECC_MT', 'WECC_NM', 'WEC_CALN', 'WECC_NNV',
+    'WECC_PNW', 'WEC_SDGE', 'WECC_SCE', 'WECC_SNV', 'WECC_UT',
+    'WECC_WY', 'CN_AB', 'CN_BC', 'CN_NL', 'CN_MB', 'CN_NB', 'CN_NF',
+    'CN_NS', 'CN_ON', 'CN_PE', 'CN_PQ', 'CN_SK',
+]
+
+epaipm_region_aggregations = {
+    'PJM': [
+        'PJM_AP', 'PJM_ATSI', 'PJM_COMD', 'PJM_Dom',
+        'PJM_EMAC', 'PJM_PENE', 'PJM_SMAC', 'PJM_WMAC'
+    ],
+    'NYISO': [
+        'NY_Z_A', 'NY_Z_B', 'NY_Z_C&E', 'NY_Z_D',
+        'NY_Z_F', 'NY_Z_G-I', 'NY_Z_J', 'NY_Z_K'
+    ],
+    'ISONE': ['NENG_CT', 'NENGREST', 'NENG_ME'],
+    'MISO': [
+        'MIS_AR', 'MIS_IL', 'MIS_INKY', 'MIS_IA',
+        'MIS_MIDA', 'MIS_LA', 'MIS_LMI', 'MIS_MNWI', 'MIS_D_MS',
+        'MIS_MO', 'MIS_MAPP', 'MIS_AMSO', 'MIS_WOTA', 'MIS_WUMS'
+    ],
+    'SPP': [
+        'SPP_NEBR', 'SPP_N', 'SPP_SPS', 'SPP_WEST', 'SPP_KIAM', 'SPP_WAUE'
+    ],
+    'WECC_NW': [
+        'WECC_CO', 'WECC_ID', 'WECC_MT', 'WECC_NNV',
+        'WECC_PNW', 'WECC_UT', 'WECC_WY'
+    ]
+
+}
+
+epaipm_rename_dict = {
+    'transmission_single_ipm': {
+        'From': 'region_from',
+        'To': 'region_to',
+        'Capacity TTC (MW)': 'firm_ttc_mw',
+        'Energy TTC (MW)': 'nonfirm_ttc_mw',
+        'Transmission Tariff (2016 mills/kWh)': 'tariff_mills_kwh',
+    },
+    'load_curves_ipm': {
+        'day': 'day_of_year',
+        'region': 'region_id_ipm',
+    },
+    'plant_region_map_ipm': {
+        'ORIS Plant Code': 'plant_id_eia',
+        'Region Name': 'region',
+    },
+}
+
 data_sources = (
     'eia860',
     # 'eia861',
     'eia923',
     'epacems',
     'ferc1',
+    'epaipm',
     # 'msha
 )
 
@@ -1696,6 +1807,7 @@ data_years = {
     'ferc1': tuple(range(1994, 2018)),
     'ferc714': tuple(range(2006, 2018)),
     'msha': tuple(range(2000, 2018)),
+    'epaipm': [None],
 }
 
 # The full set of years we currently expect to be able to ingest, per source:
@@ -1713,6 +1825,7 @@ pudl_tables = {
     'eia923': eia923_pudl_tables,
     'ferc1': ferc1_pudl_tables,
     'epacems': epacems_tables,
+    'epaipm': epaipm_pudl_tables,
 }
 
 base_data_urls = {
@@ -1724,6 +1837,7 @@ base_data_urls = {
     'ferc714': 'https://www.ferc.gov/docs-filing/forms/form-714/data',
     'ferceqr': 'ftp://eqrdownload.ferc.gov/DownloadRepositoryProd/BulkNew/CSV',
     'msha': 'https://arlweb.msha.gov/OpenGovernmentData/DataSets',
+    'epaipm': 'https://www.epa.gov/sites/production/files/2019-03'
 }
 
 
