@@ -2202,6 +2202,20 @@ epaipm_rename_dict = {
         'Region Name': 'region',
     },
 }
+
+nrelatb_url_ext = {
+    'technology_costs_nrelatb': '2019-ATB-data-summary.zip'
+}
+
+nrel_atb_files = {
+    'atb_market_20': '2019-ATB-Market-20.csv',
+    'atb_market_30': '2019-ATB-Market-30.csv',
+    'atb_rd_20': '2019-ATB-RD-20.csv',
+    'atb_rd_30': '2019-ATB-RD-30.csv',
+    'atb_rd_life': '2019-ATB-RD-Life.csv',
+}
+
+
 glue_pudl_tables = ('plants_eia', 'plants_ferc', 'plants', 'utilities_eia',
                     'utilities_ferc', 'utilities', 'utility_plant_assn')
 """
@@ -2268,7 +2282,8 @@ base_data_urls = {
     'ferceqr': 'ftp://eqrdownload.ferc.gov/DownloadRepositoryProd/BulkNew/CSV',
     'msha': 'https://arlweb.msha.gov/OpenGovernmentData/DataSets',
     'epaipm': 'https://www.epa.gov/sites/production/files/2019-03',
-    'pudl': 'https://catalyst.coop/pudl/'
+    'pudl': 'https://catalyst.coop/pudl/',
+    'nrelatb': 'https://https://atb.nrel.gov/electricity/2019/files',
 }
 """
 dict: A dictionary containing data sources (keys) and their base data URLs
