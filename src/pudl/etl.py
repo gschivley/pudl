@@ -505,6 +505,10 @@ def _validate_params_nrelatb(etl_params):
         nrelatb_dict['nrelatb_tables'] = etl_params['nrelatb_tables']
     except KeyError:
         nrelatb_dict['nrelatb_tables'] = [None]
+    try:
+        nrelatb_dict['nrelatb_years'] = etl_params['nrelatb_years']
+    except KeyError:
+        nrelatb_dict['nrelatb_years'] = []
     return(nrelatb_dict)
 
 
@@ -523,11 +527,12 @@ def _etl_nrelatb(etl_params, data_dir, pkg_dir):
     """
     nrelatb_dict = _validate_params_nrelatb(etl_params)
     nrelatb_tables = nrelatb_dict['nrelatb_tables']
+    nrelatb_years = nrelatb_dict['nrelatb_years']
     # static_tables = _load_static_tables_nrelatb(pkg_dir)
 
     # Extract ATB tables
     nrelatb_raw_dfs = pudl.extract.nrelatb.extract(
-        nrelatb_tables, data_dir=data_dir)
+        nrelatb_years, data_dir=data_dir)
 
     nrelatb_transformed_dfs = pudl.transform.nrelatb.transform(
         nrelatb_raw_dfs, nrelatb_tables
@@ -702,7 +707,8 @@ def validate_params(pkg_bundle_settings, pudl_settings):
         'ferc1': _validate_params_ferc1,
         'epacems': _validate_params_epacems,
         'glue': _validate_params_glue,
-        'epaipm': _validate_params_epaipm
+        'epaipm': _validate_params_epaipm,
+        'nrelatb': _validate_params_nrelatb,
     }
     # where we are going to compile the new validated settings
     validated_settings = []
@@ -785,6 +791,12 @@ def etl_pkg(pkg_settings, pudl_settings, pkg_bundle_dir):
             elif dataset == 'epaipm':
                 tbls = _etl_epaipm(
                     dataset_dict['epaipm'],
+                    data_dir=pudl_settings['data_dir'],
+                    pkg_dir=pkg_dir
+                )
+            elif dataset == 'nrelatb':
+                tbls = _etl_nrelatb(
+                    dataset_dict['nrelatb'],
                     data_dir=pudl_settings['data_dir'],
                     pkg_dir=pkg_dir
                 )
