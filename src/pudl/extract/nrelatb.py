@@ -15,6 +15,7 @@ def get_nrelatb_name(file, year, data_dir):
 
     Args:
         file (str): The file that we're trying to read data for.
+        year (int): The year that we're trying to read data for.
         data_dir (path-like): Path to the top directory of the PUDL datastore.
 
     Returns:
@@ -23,7 +24,7 @@ def get_nrelatb_name(file, year, data_dir):
     """
     # Access the CSV distributed with PUDL:
     nrelatb_dir = Path(datastore.path(
-        'nrelatb', file=False, year=year, data_dir=data_dir))
+        source='nrelatb', data_dir=data_dir, year=year, file=False))
 
     # FIXME this appears to be needed if reading tabs
     # pattern = pc.files_dict_nrelatb[file]
@@ -41,6 +42,7 @@ def get_nrelatb_file(filename, year, read_file_args, data_dir):
     Args:
         filename (str): ['2019-ATB-Market-20.csv', 2019-ATB-RD-20.csv',
             '2019-ATB-Market-30.csv', '2019-ATB-RD-30.csv', '2019-ATB-RD-Life.csv']
+        year (int): The year that we're trying to read data for.
         read_file_args (dict): dictionary of arguments for pandas read_*
         data_dir (path-like): Path to the top directory of the PUDL datastore.
 
@@ -52,7 +54,11 @@ def get_nrelatb_file(filename, year, read_file_args, data_dir):
     logger.info(
         f"Extracting data from NREL ATB {filename} spreadsheet.")
 
-    full_filename = get_nrelatb_name(filename, year, data_dir)
+    full_filename = get_nrelatb_name(
+        file=filename,
+        year=year,
+        data_dir=data_dir
+    )
 
     nrelatb_file = pd.read_csv(
         full_filename,
@@ -67,6 +73,7 @@ def create_dfs_nrelatb(files, nrelatb_years, data_dir):
 
     Args:
         files (list): a dictionary of nrelatb files
+        nrelatb_years (list): a list of years
         data_dir (path-like): Path to the top directory of the PUDL datastore.
     Returns:
         dict: dictionary of pages (key) to dataframes (values)
@@ -96,6 +103,7 @@ def extract(nrelatb_years, data_dir):
     """Extracts data from ATB files.
 
     Args:
+        nrelatb_years (list): a list of data_years
         data_dir (path-like): Path to the top directory of the PUDL datastore.
 
     Returns:
