@@ -4,14 +4,13 @@ import logging
 from pathlib import Path
 
 import pandas as pd
-
 import pudl.constants as pc
 import pudl.workspace.datastore as datastore
 
 logger = logging.getLogger(__name__)
 
 
-def get_nrelatb_name(file, data_dir):
+def get_nrelatb_name(file, year, data_dir):
     """Returns the appropriate NREL ATB csv file.
 
     Args:
@@ -24,7 +23,7 @@ def get_nrelatb_name(file, data_dir):
     """
     # Access the CSV distributed with PUDL:
     nrelatb_dir = Path(datastore.path(
-        'nrelatb', file=False, year=None, data_dir=data_dir))
+        'nrelatb', file=False, year=year, data_dir=data_dir))
 
     # FIXME this appears to be needed if reading tabs
     # pattern = pc.files_dict_nrelatb[file]
@@ -33,7 +32,7 @@ def get_nrelatb_name(file, data_dir):
     return Path(nrelatb_dir, file)
 
 
-def get_nrelatb_file(filename, read_file_args, data_dir):
+def get_nrelatb_file(filename, year, read_file_args, data_dir):
     """Reads in files to create dataframes.
 
     No need to use ExcelFile objects with the ATB files because each file
@@ -53,7 +52,7 @@ def get_nrelatb_file(filename, read_file_args, data_dir):
     logger.info(
         f"Extracting data from NREL ATB {filename} spreadsheet.")
 
-    full_filename = get_nrelatb_name(filename, data_dir)
+    full_filename = get_nrelatb_name(filename, year, data_dir)
 
     nrelatb_file = pd.read_csv(
         full_filename,
@@ -81,12 +80,14 @@ def create_dfs_nrelatb(files, nrelatb_years, data_dir):
     # appear to need extra flags when running read_csv
     read_file_args = {}
 
-    for pudl_name, filename in files.items():
-        nrelatb_dfs[pudl_name] = get_nrelatb_file(
-            filename,
-            read_file_args,
-            data_dir
-        )
+    for year in nrelatb_years:
+        for pudl_name, filename in files.items():
+            nrelatb_dfs[pudl_name] = get_nrelatb_file(
+                filename,
+                year,
+                read_file_args,
+                data_dir
+            )
 
     return nrelatb_dfs
 
