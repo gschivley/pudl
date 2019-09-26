@@ -5417,6 +5417,127 @@
                 }
             ],
             "sources": []
+        },
+        {
+            "profile": "tabular-data-resource",
+            "name": "technology_costs_nrelatb",
+            "path": "data/technology_costs_nrelatb.csv",
+            "title": "technology_costs_nrelatb",
+            "encoding": "utf-8",
+            "mediatype": "text/csv",
+            "format": "csv",
+            "dialect": {
+                "delimiter": ",",
+                "header": true,
+                "quoteChar": "\"",
+                "doubleQuote": true,
+                "lineTerminator": "\r\n",
+                "skipInitialSpace": true,
+                "caseSensitiveHeader": false
+            },
+            "schema": {
+                "fields": [
+                    {
+                        "name": "key",
+                        "type": "string",
+                        "description": "Unique key identifying each combination of technology and parameter values",
+                        "format": "default"
+                    },
+                    {
+                        "name": "technology",
+                        "type": "string",
+                        "description": "Name of the generation technology",
+                        "format": "default"
+                    },
+                    {
+                        "name": "cap_recovery_years",
+                        "type": "object",
+                        "description": "Length of time used for capital recovery calculations (20, 30, or Life)",
+                        "format": "default"
+                    },
+                    {
+                        "name": "cost_case",
+                        "type": "string",
+                        "description": "The scenario or case used to develop a cost estimate - low, mid, or constant costs",
+                        "format": "default"
+                    },
+                    {
+                        "name": "financial_case",
+                        "type": "string",
+                        "description": "Market conditions for project financing - RD (R&D) excludes policies such as tax credits and Market includes them",
+                        "format": "default"
+                    },
+                    {
+                        "name": "basis_year",
+                        "type": "year",
+                        "description": "Year of construction for cost and other calculations",
+                        "format": "default"
+                    },
+                    {
+                        "name": "tech_detail",
+                        "type": "string",
+                        "description": "Some parameter description of the technology for a specific generator type",
+                        "format": "default"
+                    },
+                    {
+                        "name": "capex",
+                        "type": "number",
+                        "description": "Capital expenditures required to achieve commercial operation of the generation plant",
+                        "format": "default"
+                    },
+                    {
+                        "name": "cf",
+                        "type": "number",
+                        "description": "Capacity factor - the ratio of actual annual output to output at rated capacity for an entire year",
+                        "format": "default"
+                    },
+                    {
+                        "name": "fuel",
+                        "type": "number",
+                        "description": "Fuel costs in $/MWh",
+                        "format": "default"
+                    },
+                    {
+                        "name": "lcoe",
+                        "type": "number",
+                        "description": "Levelized cost of energy over the plant lifetime ($/MWh)",
+                        "format": "default"
+                    },
+                    {
+                        "name": "o_m",
+                        "type": "number",
+                        "description": "Combined fixed and variable operations & maintenence costs",
+                        "format": "default"
+                    },
+                    {
+                        "name": "waccnomtech",
+                        "type": "number",
+                        "description": "Nominal weighted average cost of capital for each technology over time",
+                        "format": "default"
+                    }
+                ],
+                "primaryKey": [
+                    "key"
+                ],
+                "missingValues": [
+                    ""
+                ]
+            },
+            "bytes": 0,
+            "hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "licenses": [
+                {
+                    "name": "CC-BY-4.0",
+                    "title": "Creative Commons Attribution 4.0",
+                    "path": "https://creativecommons.org/licenses/by/4.0/"
+                }
+            ],
+            "sources": [
+                {
+                    "title": "NREL ATB",
+                    "path": "https://atb.nrel.gov/"
+                }
+            ]
         }
     ]
 }
