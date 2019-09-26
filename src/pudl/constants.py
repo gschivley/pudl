@@ -2207,13 +2207,16 @@ nrelatb_url_ext = {
     'technology_costs_nrelatb': '2019-ATB-data-summary.zip'
 }
 
-nrel_atb_files = {
+nrelatb_files = {
     'atb_market_20': '2019-ATB-Market-20.csv',
     'atb_market_30': '2019-ATB-Market-30.csv',
     'atb_rd_20': '2019-ATB-RD-20.csv',
     'atb_rd_30': '2019-ATB-RD-30.csv',
     'atb_rd_life': '2019-ATB-RD-Life.csv',
 }
+
+
+nrelatb_pudl_tables = ('technology_costs_nrelatb')
 
 
 glue_pudl_tables = ('plants_eia', 'plants_ferc', 'plants', 'utilities_eia',
@@ -2229,6 +2232,7 @@ data_sources = (
     'epacems',
     'ferc1',
     'epaipm',
+    'nrelatb',
     # 'pudl'
 )
 """tuple: A tuple containing the data sources we are able to pull into PUDL."""
@@ -2240,6 +2244,7 @@ data_years = {
     'epacems': tuple(range(1995, 2019)),
     'ferc1': tuple(range(1994, 2019)),
     'epaipm': (None, ),
+    'nrelatb': tuple([2019, ]),
 }
 """
 dict: A dictionary of data sources (keys) and tuples containing the years
@@ -2253,6 +2258,7 @@ working_years = {
     'epacems': tuple(range(1995, 2019)),
     'ferc1': tuple(range(2004, 2018)),
     'epaipm': (None, ),
+    'nrelatb': tuple([2019, ]),
 }
 """
 dict: A dictionary of data sources (keys) and tuples containing the years for
@@ -2283,7 +2289,7 @@ base_data_urls = {
     'msha': 'https://arlweb.msha.gov/OpenGovernmentData/DataSets',
     'epaipm': 'https://www.epa.gov/sites/production/files/2019-03',
     'pudl': 'https://catalyst.coop/pudl/',
-    'nrelatb': 'https://https://atb.nrel.gov/electricity/2019/files',
+    'nrelatb': 'https://atb.nrel.gov/electricity/2019/files',
 }
 """
 dict: A dictionary containing data sources (keys) and their base data URLs

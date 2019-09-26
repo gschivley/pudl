@@ -23,7 +23,6 @@ import time
 import uuid
 
 import pandas as pd
-
 import pudl
 import pudl.constants as pc
 
@@ -485,6 +484,63 @@ def _etl_epaipm(etl_params, data_dir, pkg_dir):
 
     return list(epaipm_transformed_dfs.keys()) + static_tables
 
+
+###############################################################################
+# NREL ATB ETL FUNCTIONS
+###############################################################################
+
+
+def _validate_params_nrelatb(etl_params):
+    """Validate the etl parameters for NREL ATB.
+
+    Args:
+        etl_params (iterable): dictionary of inputs
+
+    Returns:
+        iterable: validated dictionary of inputs
+    """
+    nrelatb_dict = {}
+    # pull out the etl_params from the dictionary passed into this function
+    try:
+        nrelatb_dict['nrelatb_tables'] = etl_params['nrelatb_tables']
+    except KeyError:
+        nrelatb_dict['nrelatb_tables'] = [None]
+    return(nrelatb_dict)
+
+
+def _etl_nrelatb(etl_params, data_dir, pkg_dir):
+    """Extracts, transforms and loads CSVs for EPA IPM.
+
+    Args:
+        etl_params (iterable): dictionary of parameters for etl
+        data_dir (path-like): The location of the directory for the data store.
+        pkg_dir (path-like): The location of the directory for this package.
+            The data package directory will be a subdirectory in the
+            `datapackage_dir` directory, with the name of the package as the
+            name of the subdirectory.
+    Returns:
+        iterable: list of tables
+    """
+    nrelatb_dict = _validate_params_nrelatb(etl_params)
+    nrelatb_tables = nrelatb_dict['nrelatb_tables']
+    # static_tables = _load_static_tables_nrelatb(pkg_dir)
+
+    # Extract ATB tables
+    nrelatb_raw_dfs = pudl.extract.nrelatb.extract(
+        nrelatb_tables, data_dir=data_dir)
+
+    nrelatb_transformed_dfs = pudl.transform.nrelatb.transform(
+        nrelatb_raw_dfs, nrelatb_tables
+    )
+
+    pudl.load.csv.dict_dump(
+        nrelatb_transformed_dfs,
+        "NREL ATB",
+        need_fix_inting=pc.need_fix_inting,
+        pkg_dir=pkg_dir
+    )
+
+    return list(nrelatb_transformed_dfs.keys())
 
 ###############################################################################
 # GLUE EXPORT FUNCTIONS

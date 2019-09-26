@@ -676,9 +676,9 @@ def verify_input_files(ferc1_years,  # noqa: C901
     for y in eia923_years:
         try:
             f = pudl.extract.eia923.get_eia923_file(y, data_dir=data_dir)
+            if not os.path.isfile(f):
+                missing_eia923_years.add(str(y))
         except AssertionError:
-            missing_eia923_years.add(str(y))
-        if not os.path.isfile(f):
             missing_eia923_years.add(str(y))
 
     if epacems_states and list(epacems_states)[0].lower() == 'all':

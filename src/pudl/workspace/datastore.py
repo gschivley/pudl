@@ -230,6 +230,11 @@ def path(source, data_dir,  # noqa: C901
             dstore_path = os.path.join(dstore_path, f"epacems{year}")
     elif source == 'epaipm':
         dstore_path = os.path.join(data_dir, 'epa', 'ipm', 'epaipm')
+    elif source == 'nrelatb':
+        dstore_path = os.path.join(data_dir, 'nrel', 'atb')
+        if year is not None:
+            dstore_path = os.path.join(dstore_path, f"{year}-ATB-data-summary")
+
     else:
         # we should never ever get here because of the assert statement.
         raise AssertionError(f"Bad data source '{source}' requested.")
@@ -360,16 +365,25 @@ def download(source, year, states, data_dir):
 
         src_urls = [f'{base_url}/{f}' for f in fns]
         tmp_files = [os.path.join(tmp_dir, f) for f in fns]
+    elif source == 'nrelatb':
+        fns = pc.nrelatb_url_ext.values()
+        base_url = pc.base_data_urls['nrelatb']
+
+        src_urls = [f'{base_url}/{f}' for f in fns]
+        tmp_files = [os.path.join(tmp_dir, f) for f in fns]
+        logger.info(
+            f"NREL: Downloading {source} data for {year} from {src_urls[0]} here: {data_dir}.")
     else:
         src_urls = [source_url(source, year)]
         tmp_files = [os.path.join(
             tmp_dir, os.path.basename(path(source, data_dir, year)))]
     if source == 'epacems':
-        logger.info(f"Downloading {source} data for {year}.")
+        logger.info(f"Downloading {source} data for {year} here: {data_dir}.")
     elif year is None:
         logger.info(f"Downloading {source} data.")
     else:
-        logger.info(f"Downloading {source} data for {year} from {src_urls[0]}")
+        logger.info(
+            f"Downloading {source} data for {year} from {src_urls[0]} here: {data_dir}.")
     url_schemes = {urllib.parse.urlparse(url).scheme for url in src_urls}
     # Pass all the URLs at once, rather than looping here, because that way
     # we can use the same FTP connection for all of the src_urls
@@ -581,6 +595,7 @@ def organize(source, year, states, data_dir,  # noqa: C901
         for newfile, destfile in zip(newfiles, destfiles):
             # paranoid safety check to make sure these files match...
             assert os.path.basename(newfile) == os.path.basename(destfile)
+            logger.info(f'Newfile: {newfile}')
             shutil.move(newfile, destfile)  # works more cases than os.rename
     # If download is False, then we already did this rmtree and move
     # The last time this program ran.

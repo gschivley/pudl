@@ -18,6 +18,7 @@ import pudl.extract.eia923
 import pudl.extract.epacems
 import pudl.extract.epaipm
 import pudl.extract.ferc1
+import pudl.extract.nrelatb
 import pudl.glue.ferc1_eia
 import pudl.helpers
 import pudl.load.csv
@@ -36,6 +37,7 @@ import pudl.transform.eia923
 import pudl.transform.epacems
 import pudl.transform.epaipm
 import pudl.transform.ferc1
+import pudl.transform.nrelatb
 # Deployed data & workspace management
 import pudl.validate
 import pudl.workspace.datastore
