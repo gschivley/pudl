@@ -2206,6 +2206,9 @@ epaipm_rename_dict = {
 nrelatb_url_ext = {
     'technology_costs_nrelatb': '2019-ATB-data-summary.zip'
 }
+"""dict: A dictionary of NREL ATB tables and associated URLs extensions for
+    downloading that table's data.
+"""
 
 nrelatb_files = {
     'atb_market_20': '2019-ATB-Market-20.csv',
@@ -2365,6 +2368,14 @@ contributors = {
         "title": "Greg Schivley",
         "role": "contributor",
     },
+    'tyler-ruggles': {
+        "title": "Tyler Ruggles",
+        "role": "contributor",
+    },
+    'clayton-barrows': {
+        "title": "Clayton Barrows",
+        "role": "contributor"
+    },
 }
 """
 dict: A dictionary of dictionaries containing organization names (keys) and
@@ -2455,6 +2466,12 @@ contributors_by_source = {
     "epaipm": [
         "greg-schivley",
     ],
+    "nrelatb": [
+        "greg-schivley",
+        "christina-gosnell",
+        "tyler-ruggles",
+        "clayton-barrows",
+    ]
 }
 """
 dict: A dictionary of data sources (keys) and lists of contributors (values).
