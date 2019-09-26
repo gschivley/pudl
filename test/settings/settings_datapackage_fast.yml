@@ -25,6 +25,19 @@ pkg_bundle_settings:
             - plant_region_map_epaipm
 
   ###########################################################################
+  # NREL ATB SETTINGS
+  ###########################################################################
+  - name: nrelatb-test
+    title: NREL Annual Technology Baseline
+    description: Detailed cost and performance data for renewables and conventional technologies.
+    datasets:
+      - nrelatb:
+          nrelatb_tables:
+            - technology_costs_nrelatb
+          # nrelatb_years: [2019]
+          nrelatb_years: [2019]
+
+  ###########################################################################
   # FERC FORM 1 SETTINGS
   ###########################################################################
   - name: ferc1-test-fast

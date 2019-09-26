@@ -6,11 +6,10 @@ import pathlib
 import shutil
 
 import pandas as pd
+import pudl
 import pytest
 import sqlalchemy as sa
 import yaml
-
-import pudl
 from pudl import constants as pc
 from pudl.output.pudltabl import PudlTabl
 from pudl.workspace import datastore
@@ -320,7 +319,8 @@ def datastore_fixture(pudl_settings_fixture, data_scope):
     sources_to_update = [
         'epaipm',
         'eia860',
-        'eia923'
+        'eia923',
+        'nrelatb',
     ]
 
     years_by_source = {
@@ -329,6 +329,7 @@ def datastore_fixture(pudl_settings_fixture, data_scope):
         'epacems': [],
         'epaipm': [None, ],
         'ferc1': [],
+        'nrelatb': data_scope['nrelatb_years']
     }
     # Sadly, FERC & EPA only provide access to their data via FTP, and it's
     # not possible to use FTP from within the Travis CI environment:

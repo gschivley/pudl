@@ -21,13 +21,14 @@ logger = logging.getLogger(__name__)
 
 def test_datastore(pudl_settings_fixture, data_scope):
     """Download sample data for each available data source."""
-    sources_to_update = ['eia860', 'eia923', 'epaipm']
+    sources_to_update = ['eia860', 'eia923', 'epaipm', 'nrelatb']
     years_by_source = {
         'eia860': data_scope['eia860_years'],
         'eia923': data_scope['eia923_years'],
         'epacems': [],
         'epaipm': [None, ],
         'ferc1': [],
+        'nrelatb': data_scope['nrelatb_years']
     }
     # Sadly, FERC & EPA only provide access to their data via FTP, and it's
     # not possible to use FTP from within the Travis CI environment:
@@ -54,5 +55,6 @@ def test_datastore(pudl_settings_fixture, data_scope):
         epacems_years=years_by_source['epacems'],
         epacems_states=states,
         # Currently no mechanism for automatically verifying EPA IPM files...
+        # NREL ATB is also not being verified at this time.
         pudl_settings=pudl_settings_fixture,
     )
