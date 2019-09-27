@@ -74,4 +74,8 @@ def transform(nrelatb_raw_dfs, nrelatb_tables=pc.nrelatb_pudl_tables):
     nrelatb_transformed_df = simplify_columns(
         nrelatb_transformed_df.reset_index())
 
+    nrelatb_transformed_df['cap_recovery_years'] = (
+        nrelatb_transformed_df['cap_recovery_years'].astype(str)
+    )
+
     return {'technology_costs_nrelatb': nrelatb_transformed_df}

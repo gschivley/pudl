@@ -5438,6 +5438,12 @@
             "schema": {
                 "fields": [
                     {
+                        "name": "id",
+                        "type": "integer",
+                        "description": "PUDL issued surrogate key.",
+                        "format": "default"
+                    },
+                    {
                         "name": "key",
                         "type": "string",
                         "description": "Unique key identifying each combination of technology and parameter values",
@@ -5451,7 +5457,7 @@
                     },
                     {
                         "name": "cap_recovery_years",
-                        "type": "object",
+                        "type": "string",
                         "description": "Length of time used for capital recovery calculations (20, 30, or Life)",
                         "format": "default"
                     },
@@ -5517,7 +5523,7 @@
                     }
                 ],
                 "primaryKey": [
-                    "key"
+                    "id"
                 ],
                 "missingValues": [
                     ""
