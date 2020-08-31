@@ -7,6 +7,7 @@ standardized units and column names, standardizing the formatting of some
 string values, and correcting data entry errors which we can infer based on
 the existing data. It may also include removing bad data, or replacing it
 with the appropriate NA values.
+
 """
 
 import importlib.resources
@@ -36,92 +37,198 @@ logger = logging.getLogger(__name__)
 ##############################################################################
 
 
+def unpack_table(ferc1_df, table_name, data_cols, data_rows):
+    """
+    Normalize a row-and-column based FERC Form 1 table.
+
+    Pulls the named database table from the FERC Form 1 DB and uses the
+    corresponding ferc1_row_map to unpack the row_number coded data.
+
+    Args:
+        ferc1_df (pandas.DataFrame): Raw FERC Form 1 DataFrame from the DB.
+        table_name (str): Original name of the FERC Form 1 DB table.
+        data_cols (list): List of strings corresponding to the original FERC
+            Form 1 database table column labels -- these are the columns of
+            data that we are extracting (it can be a subset of the columns
+            which are present in the original database).
+        data_rows (list): List of row_names to extract, as defined in the
+            FERC 1 row maps. Set to slice(None) if you want all rows.
+
+    Returns:
+        pandas.DataFrame
+
+    """
+    # Read in the corresponding row map:
+    row_map = (
+        pd.read_csv(
+            importlib.resources.open_text(
+                "pudl.package_data.meta.ferc1_row_maps",
+                f"{table_name}.csv"),
+            index_col=0, comment="#")
+        .copy().transpose()
+        .rename_axis(index="year_index", columns=None)
+    )
+    row_map.index = row_map.index.astype(int)
+
+    # For each year, rename row numbers to variable names based on row_map.
+    rename_dict = {}
+    out_df = pd.DataFrame()
+    for year in row_map.index:
+        rename_dict = {v: k for k, v in dict(row_map.loc[year, :]).items()}
+        _ = rename_dict.pop(-1, None)
+        df = ferc1_df.loc[ferc1_df.report_year == year].copy()
+        df.loc[:, "row_name"] = (
+            df.loc[:, "row_number"]
+            .replace(rename_dict, value=None)
+        )
+        # The concatenate according to row_name
+        out_df = pd.concat([out_df, df], axis="index")
+
+    # Is this list of index columns universal? Or should they be an argument?
+    idx_cols = [
+        "respondent_id",
+        "report_year",
+        "report_prd",
+        "spplmnt_num",
+        "row_name"
+    ]
+    logger.info(
+        f"{len(out_df[out_df.duplicated(idx_cols)])/len(out_df):.4%} "
+        f"of unpacked records were duplicates, and discarded."
+    )
+    # Index the dataframe based on the list of index_cols
+    # Unstack the dataframe based on variable names
+    out_df = (
+        out_df.loc[:, idx_cols + data_cols]
+        # These lost records should be minimal. If not, something's wrong.
+        .drop_duplicates(subset=idx_cols)
+        .set_index(idx_cols)
+        .unstack("row_name")
+        .loc[:, (slice(None), data_rows)]
+    )
+    return out_df
+
+
+def cols_to_cats(df, cat_name, col_cats):
+    """
+    Turn top-level MultiIndex columns into a categorial column.
+
+    In some cases FERC Form 1 data comes with many different types of related
+    values interleaved in the same table -- e.g. current year and previous year
+    income -- this can result in DataFrames that are hundreds of columns wide,
+    which is unwieldy. This function takes those top level MultiIndex labels
+    and turns them into categories in a single column, which can be used to
+    select a particular type of report.
+
+    Args:
+        df (pandas.DataFrame): the dataframe to be simplified.
+        cat_name (str): the label of the column to be created indicating what
+            MultiIndex label the values came from.
+        col_cats (dict): a dictionary with top level MultiIndex labels as keys,
+            and the category to which they should be mapped as values.
+
+    Returns:
+        pandas.DataFrame: A re-shaped/re-labeled dataframe with one fewer
+        levels of MultiIndex in the columns, and an additional column
+        containing the assigned labels.
+
+    """
+    out_df = pd.DataFrame()
+    for col, cat in col_cats.items():
+        logger.info(f"Col: {col}, Cat: {cat}")
+        tmp_df = df.loc[:, col].copy().dropna(how='all')
+        tmp_df.loc[:, cat_name] = cat
+        out_df = pd.concat([out_df, tmp_df])
+    return out_df.reset_index()
+
+
 def _clean_cols(df, table_name):
     """Adds a FERC record ID and drop FERC columns not to be loaded into PUDL.
 
     It is often useful to be able to tell exactly which record in the FERC Form
     1 database a given record within the PUDL database came from. Within each
-    FERC Form 1 table, each record is uniquely identified by the combination
-    of:
-      - report_year
-      - respondent_id
-      - spplmnt_num
-      - row_number
+    FERC Form 1 table, each record is supposed to be uniquely identified by the
+    combination of: report_year, report_prd, respondent_id, spplmnt_num,
+    row_number.
 
     So this function takes a dataframe, checks to make sure it contains each of
     those columns and that none of them are NULL, and adds a new column to the
     dataframe containing a string of the format:
 
-    {table_name}_{report_year}_{respondent_id}_{spplmnt_num}_{row_number}
+    {table_name}_{report_year}_{report_prd}_{respondent_id}_{spplmnt_num}_{row_number}
 
-    In addition there are some columns which are not meaningful or useful in
-    the context of PUDL, but which show up in virtually every FERC table, and
-    this function drops them if they are present. These columns include:
-     - spplmnt_num (which goes into the record ID)
-     - row_number (which goes into the record_ ID)
-     - row_prvlg
-     - row_seq
-     - item
-     - report_prd
-     - record_number (a temporary column used in plants_small)
-     - *_f (all footnote columns)
+    In some PUDL FERC Form 1 tables (e.g. plant_in_service_ferc1) a single row
+    is re-organized into several new records in order to normalize the data and
+    ensure it is stored in a "tidy" format. In such cases each of the resulting
+    PUDL records will have the same ``record_id``.  Otherwise, the
+    ``record_id`` is expected to be unique within each FERC Form 1 table.
+    However there are a handful of cases in which this uniqueness constraint is
+    violated due to data reporting issues in FERC Form 1.
+
+    In addition to those primary key columns, there are some columns which are
+    not meaningful or useful in the context of PUDL, but which show up in
+    virtually every FERC table, and this function drops them if they are
+    present. These columns include: row_prvlg, row_seq, item, record_number (a
+    temporary column used in plants_small) and all the footnote columns, which
+    end in "_f".
 
     Args:
-        df (pandas.DataFrame): The DataFrame in which the function looks for
-            columns for the unique identification of FERC records, and ensures
-            that those columns are not NULL.
+        df (pandas.DataFrame): The DataFrame in which the function looks
+            for columns for the unique identification of FERC records, and
+            ensures that those columns are not NULL.
         table_name (str): The name of the table that we are cleaning.
 
     Returns:
-        pandas.DataFrame: The same DataFrame with a column appended containing
-            a string of the format
-            {table_name}_{report_year}_{respondent_id}_{spplmnt_num}_{row_number}
+        pandas.DataFrame: The same DataFrame with a column appended
+        containing a string of the format {table_name}_{report_year}_{report_prd}_{respondent_id}_{spplmnt_num}_{row_number}
 
     Raises:
         AssertionError: If the table input contains NULL columns
+
     """
     # Make sure that *all* of these columns exist in the proffered table:
-    for field in ['report_year', 'respondent_id', 'spplmnt_num', 'row_number']:
-        if df[field].isnull().any():
-            raise AssertionError(
-                f"Null field {field} found in ferc1 table {table_name}."
-            )
+    for field in ['report_year', 'report_prd', 'respondent_id', 'spplmnt_num', 'row_number']:
+        if field in df.columns:
+            if df[field].isnull().any():
+                raise AssertionError(
+                    f"Null field {field} found in ferc1 table {table_name}."
+                )
 
     # Create a unique inter-year FERC table record ID:
     df['record_id'] = (
         table_name + '_' +
         df.report_year.astype(str) + '_' +
+        df.report_prd.astype(str) + '_' +
         df.respondent_id.astype(str) + '_' +
-        df.spplmnt_num.astype(str) + '_' +
-        df.row_number.astype(str)
+        df.spplmnt_num.astype(str)
     )
+    # Because of the way we are re-organizing columns and rows to create well
+    # normalized tables, there may or may not be a row number available.
+    if "row_number" in df.columns:
+        df["record_id"] = df["record_id"] + "_" + df.row_number.astype(str)
 
-    # Check to make sure that the generated record_id is unique... since that's
-    # kind of the whole point. There are couple of genuine bad records here
-    # that are taken care of in the transform step, so just print a warning:
-    n_dupes = df.record_id.duplicated().values.sum()
-    if n_dupes:
-        dupe_ids = df.record_id[df.record_id.duplicated()].values
-        logger.warning(
-            f"{n_dupes} duplicate record_id values found "
-            f"in pre-transform table {table_name}: {dupe_ids}."
-        )
-
-    unused_cols = [
-        'spplmnt_num',
-        'row_number',
-        'row_prvlg',
-        'row_seq',
-        'report_prd',
-        'item',
-        'record_number'
-    ]
+        # Check to make sure that the generated record_id is unique... since
+        # that's kind of the whole point. There are couple of genuine bad
+        # records here that are taken care of in the transform step, so just
+        # print a warning.
+        n_dupes = df.record_id.duplicated().values.sum()
+        if n_dupes:
+            dupe_ids = df.record_id[df.record_id.duplicated()].values
+            logger.warning(
+                f"{n_dupes} duplicate record_id values found "
+                f"in pre-transform table {table_name}: {dupe_ids}."
+            )
 
     # Drop any _f columns... since we're not using the FERC Footnotes...
-    footnote_cols = [col for col in df.columns if re.match('.*_f$', col)]
-    # Drop these columns and don't complain about it if they don't exist:
-    df = df.drop(unused_cols + footnote_cols, errors='ignore', axis=1)
-
+    # Drop columns and don't complain about it if they don't exist:
+    no_f = [c for c in df.columns if not re.match(".*_f$", c)]
+    df = (
+        df.loc[:, no_f]
+        .drop(['spplmnt_num', 'row_number', 'row_prvlg', 'row_seq',
+               'report_prd', 'item', 'record_number'],
+              errors='ignore', axis="columns")
+        .rename(columns={"respondent_id": "utility_id_ferc1"})
+    )
     return df
 
 
@@ -216,75 +323,60 @@ def plants_steam(ferc1_raw_dfs, ferc1_transformed_dfs):
 
 
 def _plants_steam_clean(ferc1_steam_df):
-    # grab table from dictionary of dfs
     ferc1_steam_df = (
-        ferc1_steam_df.
-        pipe(_clean_cols, 'f1_steam').
-        pipe(pudl.helpers.strip_lower, ['plant_name']).
-        # Take the messy free-form construction_type and plant_kind fields, and
-        # do our best to map them to some canonical categories... this is
-        # necessarily imperfect:
-        pipe(pudl.helpers.cleanstrings, ['type_const', 'plant_kind'],
-             [pc.ferc1_const_type_strings, pc.ferc1_plant_kind_strings],
-             unmapped='')
+        ferc1_steam_df.rename(columns={
+            "plant_name": "plant_name_ferc1",
+            "yr_const": 'construction_year',
+            "plant_kind": 'plant_type',
+            "type_const": 'construction_type',
+            "asset_retire_cost": 'asset_retirement_cost',
+            "yr_installed": 'installation_year',
+            "tot_capacity": 'capacity_mw',
+            "peak_demand": 'peak_demand_mw',
+            "plant_hours": 'plant_hours_connected_while_generating',
+            "plnt_capability": 'plant_capability_mw',
+            "when_limited": 'water_limited_capacity_mw',
+            "when_not_limited": 'not_water_limited_capacity_mw',
+            "avg_num_of_emp": 'avg_num_employees',
+            "net_generation": 'net_generation_kwh',
+            "cost_land": 'capex_land',
+            "cost_structure": 'capex_structures',
+            "cost_equipment": 'capex_equipment',
+            "cost_of_plant_to": 'capex_total',
+            "cost_per_kw": 'capex_per_kw',
+            "expns_operations": 'opex_operations',
+            "expns_fuel": 'opex_fuel',
+            "expns_coolants": 'opex_coolants',
+            "expns_steam": 'opex_steam',
+            "expns_steam_othr": 'opex_steam_other',
+            "expns_transfer": 'opex_transfer',
+            "expns_electric": 'opex_electric',
+            "expns_misc_power": 'opex_misc_power',
+            "expns_rents": 'opex_rents',
+            "expns_allowances": 'opex_allowances',
+            "expns_engnr": 'opex_engineering',
+            "expns_structures": 'opex_structures',
+            "expns_boiler": 'opex_boiler',
+            "expns_plants": 'opex_plants',
+            "expns_misc_steam": 'opex_misc_steam',
+            "tot_prdctn_expns": 'opex_production_total',
+            "expns_kwh": 'opex_per_kwh'})
+        .pipe(_clean_cols, "f1_steam")
+        .pipe(pudl.helpers.strip_lower, ['plant_name_ferc1'])
+        .pipe(pudl.helpers.cleanstrings,
+              ['construction_type', 'plant_type'],
+              [pc.ferc1_const_type_strings, pc.ferc1_plant_kind_strings],
+              unmapped='')
+        .pipe(pudl.helpers.oob_to_nan,
+              cols=["construction_year", "installation_year"],
+              lb=1850, ub=max(pc.working_years["ferc1"]) + 1)
+        .assign(
+            capex_per_mw=lambda x: 1000.0 * x.capex_per_kw,
+            opex_per_mwh=lambda x: 1000.0 * x.opex_per_kwh,
+            net_generation_mwh=lambda x: x.net_generation_kwh / 1000.0,
+        )
+        .drop(columns=["capex_per_kw", "opex_per_kwh", "net_generation_kwh"])
     )
-
-    # Force the construction and installation years to be numeric values, and
-    # set them to NA if they can't be converted. (table has some junk values)
-    ferc1_steam_df['yr_const'] = pd.to_numeric(
-        ferc1_steam_df['yr_const'], errors='coerce')
-    ferc1_steam_df['yr_installed'] = pd.to_numeric(
-        ferc1_steam_df['yr_installed'], errors='coerce')
-    # There are also a few zeroes... which are not valid years for us:
-    ferc1_steam_df = ferc1_steam_df.replace(
-        {"yr_const": 0, "yr_installed": 0}, np.nan)
-
-    # Converting everything to per MW and MWh units...
-    ferc1_steam_df['cost_per_mw'] = 1000 * ferc1_steam_df['cost_per_kw']
-    ferc1_steam_df.drop('cost_per_kw', axis=1, inplace=True)
-    ferc1_steam_df['net_generation_mwh'] = ferc1_steam_df['net_generation'] / 1000
-    ferc1_steam_df.drop('net_generation', axis=1, inplace=True)
-    ferc1_steam_df['expns_per_mwh'] = 1000 * ferc1_steam_df['expns_kwh']
-    ferc1_steam_df.drop('expns_kwh', axis=1, inplace=True)
-
-    ferc1_steam_df.rename(columns={
-        # FERC 1 DB Name      PUDL DB Name
-        'respondent_id': 'utility_id_ferc1',
-        'yr_const': 'construction_year',
-        'plant_kind': 'plant_type',
-        'type_const': 'construction_type',
-        'asset_retire_cost': 'asset_retirement_cost',
-        'yr_installed': 'installation_year',
-        'tot_capacity': 'capacity_mw',
-        'peak_demand': 'peak_demand_mw',
-        'plant_hours': 'plant_hours_connected_while_generating',
-        'plnt_capability': 'plant_capability_mw',
-        'when_limited': 'water_limited_capacity_mw',
-        'when_not_limited': 'not_water_limited_capacity_mw',
-        'avg_num_of_emp': 'avg_num_employees',
-        'net_generation': 'net_generation_mwh',
-        'cost_land': 'capex_land',
-        'cost_structure': 'capex_structures',
-        'cost_equipment': 'capex_equipment',
-        'cost_of_plant_to': 'capex_total',
-        'cost_per_mw': 'capex_per_mw',
-        'expns_operations': 'opex_operations',
-        'expns_fuel': 'opex_fuel',
-        'expns_coolants': 'opex_coolants',
-        'expns_steam': 'opex_steam',
-        'expns_steam_othr': 'opex_steam_other',
-        'expns_transfer': 'opex_transfer',
-        'expns_electric': 'opex_electric',
-        'expns_misc_power': 'opex_misc_power',
-        'expns_rents': 'opex_rents',
-        'expns_allowances': 'opex_allowances',
-        'expns_engnr': 'opex_engineering',
-        'expns_structures': 'opex_structures',
-        'expns_boiler': 'opex_boiler',
-        'expns_plants': 'opex_plants',
-        'expns_misc_steam': 'opex_misc_steam',
-        'tot_prdctn_expns': 'opex_production_total',
-        'expns_per_mwh': 'opex_per_mwh'}, inplace=True)
 
     return ferc1_steam_df
 
@@ -311,19 +403,19 @@ def _plants_steam_assign_plant_ids(ferc1_steam_df, ferc1_fuel_df):
     ferc1_steam_df = (
         ferc1_steam_df.merge(
             fuel_fractions[
-                ['utility_id_ferc1', 'plant_name', 'report_year'] + ffc],
-            on=['utility_id_ferc1', 'plant_name', 'report_year'],
+                ['utility_id_ferc1', 'plant_name_ferc1', 'report_year'] + ffc],
+            on=['utility_id_ferc1', 'plant_name_ferc1', 'report_year'],
             how='left'
         )
     )
     ferc1_steam_df[ffc] = ferc1_steam_df[ffc].fillna(value=0.0)
 
     # Train the classifier using DEFAULT weights, parameters not listed here.
-    ferc_clf = pudl.transform.ferc1.make_ferc_clf(ferc1_steam_df)
-    ferc_clf = ferc_clf.fit_transform(ferc1_steam_df)
+    ferc1_clf = pudl.transform.ferc1.make_ferc1_clf(ferc1_steam_df)
+    ferc1_clf = ferc1_clf.fit_transform(ferc1_steam_df)
 
     # Use the classifier to generate groupings of similar records:
-    record_groups = ferc_clf.predict(ferc1_steam_df.record_id)
+    record_groups = ferc1_clf.predict(ferc1_steam_df.record_id)
     n_tot = len(ferc1_steam_df)
     n_grp = len(record_groups)
     pct_grp = n_grp / n_tot
@@ -368,12 +460,12 @@ def _plants_steam_assign_plant_ids(ferc1_steam_df, ferc1_fuel_df):
                                 source='source',
                                 target='target')
     # Find the connected components of the graph
-    ferc_plants = (G.subgraph(c) for c in nx.connected_components(G))
+    ferc1_plants = (G.subgraph(c) for c in nx.connected_components(G))
 
     # Now we'll iterate through the connected components and assign each of
     # them a FERC Plant ID, and pull the results back out into a dataframe:
     plants_w_ids = pd.DataFrame()
-    for plant_id_ferc1, plant in enumerate(ferc_plants):
+    for plant_id_ferc1, plant in enumerate(ferc1_plants):
         nx.set_edge_attributes(plant,
                                plant_id_ferc1 + 1,
                                name='plant_id_ferc1')
@@ -457,7 +549,7 @@ def plants_steam_validate_ids(ferc1_steam_df):
             )
     else:
         logger.info(
-            f"No duplicate years found in any plant_id_ferc1. Hooray!"
+            "No duplicate years found in any plant_id_ferc1. Hooray!"
         )
 
 
@@ -504,7 +596,7 @@ def fuel(ferc1_raw_dfs, ferc1_transformed_dfs):
         # Rename the columns to match our DB definitions
         rename(columns={
             # FERC 1 DB Name      PUDL DB Name
-            'respondent_id': 'utility_id_ferc1',
+            "plant_name": "plant_name_ferc1",
             'fuel': 'fuel_type_code_pudl',
             'fuel_avg_mmbtu_per_unit': 'fuel_mmbtu_per_unit',
             'fuel_quantity': 'fuel_qty_burned',
@@ -613,9 +705,10 @@ def plants_small(ferc1_raw_dfs, ferc1_transformed_dfs):
 
     # Force the construction and installation years to be numeric values, and
     # set them to NA if they can't be converted. (table has some junk values)
-    ferc1_small_df['yr_constructed'] = pd.to_numeric(
-        ferc1_small_df['yr_constructed'],
-        errors='coerce')
+    ferc1_small_df = pudl.helpers.oob_to_nan(
+        ferc1_small_df, cols=["yr_constructed"],
+        lb=1850, ub=max(pc.working_years["ferc1"]) + 1)
+
     # Convert from cents per mmbtu to dollars per mmbtu to be consistent
     # with the f1_fuel table data. Also, let's use a clearer name.
     ferc1_small_df['fuel_cost_per_mmbtu'] = ferc1_small_df['fuel_cost'] / 100.0
@@ -663,8 +756,8 @@ def plants_small(ferc1_raw_dfs, ferc1_transformed_dfs):
     # in order to create one complete column of plant names, we have to use the
     # cleaned plant names when available and the orignial plant names when the
     # cleaned version is not available, but the strings first need cleaning
-    ferc1_small_df['plant_name_clean'] = \
-        ferc1_small_df['plant_name_clean'].fillna(value="")
+    ferc1_small_df['plant_name_clean'] = ferc1_small_df['plant_name_clean'].fillna(
+        value="")
     ferc1_small_df['plant_name_clean'] = ferc1_small_df.apply(
         lambda row: row['plant_name']
         if (row['plant_name_clean'] == "")
@@ -676,9 +769,8 @@ def plants_small(ferc1_raw_dfs, ferc1_transformed_dfs):
 
     ferc1_small_df.rename(columns={
         # FERC 1 DB Name      PUDL DB Name
-        'respondent_id': 'utility_id_ferc1',
         'plant_name': 'plant_name_original',
-        'plant_name_clean': 'plant_name',
+        'plant_name_clean': 'plant_name_ferc1',
         'ferc_license': 'ferc_license_id',
         'yr_constructed': 'construction_year',
         'capacity_rating': 'capacity_mw',
@@ -714,28 +806,25 @@ def plants_hydro(ferc1_raw_dfs, ferc1_transformed_dfs):
     """
     # grab table from dictionary of dfs
     ferc1_hydro_df = (
-        _clean_cols(ferc1_raw_dfs['plants_hydro_ferc1'], 'f1_hydro').
+        _clean_cols(ferc1_raw_dfs['plants_hydro_ferc1'], 'f1_hydro')
         # Standardize plant_name capitalization and remove leading/trailing
         # white space -- necesary b/c plant_name is part of many foreign keys.
-        pipe(pudl.helpers.strip_lower, ['plant_name']).
-        pipe(pudl.helpers.cleanstrings, ['plant_const'], [pc.ferc1_const_type_strings],
-             unmapped='').
-        assign(
+        .pipe(pudl.helpers.strip_lower, ['plant_name'])
+        .pipe(pudl.helpers.cleanstrings, ['plant_const'],
+              [pc.ferc1_const_type_strings], unmapped='')
+        .assign(
             # Converting kWh to MWh
             net_generation_mwh=lambda x: x.net_generation / 1000.0,
             # Converting cost per kW installed to cost per MW installed:
             cost_per_mw=lambda x: x.cost_per_kw * 1000.0,
             # Converting kWh to MWh
-            expns_per_mwh=lambda x: x.expns_kwh * 1000.0,
-            yr_const=lambda x: pd.to_numeric(x.yr_const, errors='coerce'),
-            yr_installed=lambda x: pd.to_numeric(
-                x.yr_installed, errors='coerce'),
-        ).
-        drop(columns=['net_generation', 'cost_per_kw', 'expns_kwh']).
-        dropna().
-        rename(columns={
+            expns_per_mwh=lambda x: x.expns_kwh * 1000.0)
+        .pipe(pudl.helpers.oob_to_nan, cols=["yr_const", "yr_installed"],
+              lb=1850, ub=max(pc.working_years["ferc1"]) + 1)
+        .drop(columns=['net_generation', 'cost_per_kw', 'expns_kwh'])
+        .rename(columns={
             # FERC1 DB          PUDL DB
-            'respondent_id': 'utility_id_ferc1',
+            "plant_name": "plant_name_ferc1",
             'project_no': 'project_num',
             'yr_const': 'construction_year',
             'plant_kind': 'plant_type',
@@ -771,6 +860,12 @@ def plants_hydro(ferc1_raw_dfs, ferc1_transformed_dfs):
             'asset_retire_cost': 'asset_retirement_cost',
             '': '',
         })
+        .drop_duplicates(
+            subset=["report_year",
+                    "utility_id_ferc1",
+                    "plant_name_ferc1",
+                    "capacity_mw"],
+            keep=False)
     )
 
     ferc1_transformed_dfs['plants_hydro_ferc1'] = ferc1_hydro_df
@@ -794,33 +889,28 @@ def plants_pumped_storage(ferc1_raw_dfs, ferc1_transformed_dfs):
     """
     # grab table from dictionary of dfs
     ferc1_pump_df = (
-        _clean_cols(ferc1_raw_dfs['plants_pumped_storage_ferc1'],
-                    'f1_pumped_storage').
+        _clean_cols(
+            ferc1_raw_dfs['plants_pumped_storage_ferc1'], 'f1_pumped_storage')
         # Standardize plant_name capitalization and remove leading/trailing
         # white space -- necesary b/c plant_name is part of many foreign keys.
-        pipe(pudl.helpers.strip_lower, ['plant_name']).
+        .pipe(pudl.helpers.strip_lower, ['plant_name'])
         # Clean up the messy plant construction type column:
-        pipe(pudl.helpers.cleanstrings,
-             ['plant_kind'],
-             [pc.ferc1_const_type_strings],
-             unmapped='').
-        assign(
+        .pipe(pudl.helpers.cleanstrings, ['plant_kind'],
+              [pc.ferc1_const_type_strings], unmapped='')
+        .assign(
             # Converting from kW/kWh to MW/MWh
             net_generation_mwh=lambda x: x.net_generation / 1000.0,
             energy_used_for_pumping_mwh=lambda x: x.energy_used / 1000.0,
             net_load_mwh=lambda x: x.net_load / 1000.0,
             cost_per_mw=lambda x: x.cost_per_kw * 1000.0,
-            expns_per_mwh=lambda x: x.expns_kwh * 1000.0,
-            yr_const=lambda x: pd.to_numeric(x.yr_const, errors='coerce'),
-            yr_installed=lambda x: pd.to_numeric(
-                x.yr_installed, errors='coerce'),
-        ).
-        drop(columns=['net_generation', 'energy_used', 'net_load',
-                      'cost_per_kw', 'expns_kwh']).
-        dropna().
-        rename(columns={
+            expns_per_mwh=lambda x: x.expns_kwh * 1000.0)
+        .pipe(pudl.helpers.oob_to_nan, cols=["yr_const", "yr_installed"],
+              lb=1850, ub=max(pc.working_years["ferc1"]) + 1)
+        .drop(columns=['net_generation', 'energy_used', 'net_load',
+                       'cost_per_kw', 'expns_kwh'])
+        .rename(columns={
             # FERC1 DB          PUDL DB
-            'respondent_id': 'utility_id_ferc1',
+            "plant_name": "plant_name_ferc1",
             'project_number': 'project_num',
             'tot_capacity': 'capacity_mw',
             'project_no': 'project_num',
@@ -858,6 +948,12 @@ def plants_pumped_storage(ferc1_raw_dfs, ferc1_transformed_dfs):
             'tot_prdctn_exns': 'opex_total',
             'expns_per_mwh': 'opex_per_mwh',
         })
+        .drop_duplicates(
+            subset=["report_year",
+                    "utility_id_ferc1",
+                    "plant_name_ferc1",
+                    "capacity_mw"],
+            keep=False)
     )
 
     ferc1_transformed_dfs['plants_pumped_storage_ferc1'] = ferc1_pump_df
@@ -865,47 +961,70 @@ def plants_pumped_storage(ferc1_raw_dfs, ferc1_transformed_dfs):
 
 
 def plant_in_service(ferc1_raw_dfs, ferc1_transformed_dfs):
-    """Transforms FERC Form 1 plant_in_service data for loading into PUDL.
+    """Transforms FERC Form 1 Plant in Service data for loading into PUDL.
 
-    This information is organized by FERC account, with each line of the FERC
-    Form 1 having a different FERC account id (most are numeric and correspond
-    to FERC's Uniform Electric System of Accounts). As of PUDL v0.1, this data
-    is only valid from 2007 onward, as the line numbers for several accounts
-    are different in earlier years.
+    Re-organizes the original FERC Form 1 Plant in Service data by unpacking
+    the rows as needed on a year by year basis, to organize them into columns.
+    The "columns" in the original FERC Form 1 denote starting balancing, ending
+    balance, additions, retirements, adjustments, and transfers -- these
+    categories are turned into labels in a column called "amount_type". Because
+    each row in the transformed table is composed of many individual records
+    (rows) from the original table, row_number can't be part of the record_id,
+    which means they are no longer unique. To infer exactly what record a given
+    piece of data came from, the record_id and the row_map (found in the PUDL
+    package_data directory) can be used.
 
     Args:
         ferc1_raw_dfs (dict): Each entry in this dictionary of DataFrame
-            objects corresponds to a table from the  FERC Form 1 DBC database.
+            objects corresponds to a table from the FERC Form 1 DBC database.
         ferc1_transformed_dfs (dict): A dictionary of DataFrames to be
             transformed.
 
     Returns:
         dict: The dictionary of the transformed DataFrames.
+
     """
-    # grab table from dictionary of dfs
-    ferc1_pis_df = ferc1_raw_dfs['plant_in_service_ferc1']
+    pis_df = (
+        unpack_table(
+            ferc1_df=ferc1_raw_dfs["plant_in_service_ferc1"],
+            table_name="f1_plant_in_srvce",
+            data_rows=slice(None),  # Gotta catch 'em all!
+            data_cols=[
+                "begin_yr_bal",
+                "addition",
+                "retirements",
+                "adjustments",
+                "transfers",
+                "yr_end_bal"
+            ])
+        .pipe(  # Convert top level of column index into a categorical column:
+            cols_to_cats,
+            cat_name="amount_type",
+            col_cats={
+                "begin_yr_bal": "starting_balance",
+                "addition": "additions",
+                "retirements": "retirements",
+                "adjustments": "adjustments",
+                "transfers": "transfers",
+                "yr_end_bal": "ending_balance",
+            })
+        .rename_axis(columns=None)
+        .pipe(_clean_cols, "f1_plant_in_srvce")
+        .set_index([
+            "utility_id_ferc1",
+            "report_year",
+            "amount_type",
+            "record_id"])
+        .reset_index()
+    )
 
-    # Now we need to add a column to the DataFrame that has the FERC account
-    # IDs corresponding to the row_number that's already in there...
-    ferc_accts_df = pc.ferc_electric_plant_accounts.drop(
-        ['ferc_account_description'], axis=1)
-    ferc_accts_df.dropna(inplace=True)
-    ferc_accts_df['row_number'] = ferc_accts_df['row_number'].astype(int)
+    # Get rid of the columns corresponding to "header" rows in the FERC
+    # form, which should *never* contain data... but in about 2 dozen cases,
+    # they do. See this issue on Github for more information:
+    # https://github.com/catalyst-cooperative/pudl/issues/471
+    pis_df = pis_df.drop(columns=pis_df.filter(regex=".*_head$").columns)
 
-    ferc1_pis_df = pd.merge(ferc1_pis_df, ferc_accts_df,
-                            how='left', on='row_number')
-    ferc1_pis_df = _clean_cols(ferc1_pis_df, 'f1_plant_in_srvce')
-
-    ferc1_pis_df.rename(columns={
-        # FERC 1 DB Name  PUDL DB Name
-        'respondent_id': 'utility_id_ferc1',
-        'begin_yr_bal': 'beginning_year_balance',
-        'addition': 'additions',
-        'yr_end_bal': 'year_end_balance'},
-        inplace=True)
-
-    ferc1_transformed_dfs['plant_in_service_ferc1'] = ferc1_pis_df
-
+    ferc1_transformed_dfs["plant_in_service_ferc1"] = pis_df
     return ferc1_transformed_dfs
 
 
@@ -931,10 +1050,7 @@ def purchased_power(ferc1_raw_dfs, ferc1_transformed_dfs):
     # grab table from dictionary of dfs
     df = (_clean_cols(ferc1_raw_dfs['purchased_power_ferc1'],
                       'f1_purchased_pwr')
-          .replace({"": "NA"}, "")
-          .replace(to_replace='', value=np.nan)
           .rename(columns={
-              'respondent_id': 'utility_id_ferc1',
               'athrty_co_name': 'seller_name',
               'sttstcl_clssfctn': 'purchase_type',
               'rtsched_trffnbr': 'tariff',
@@ -948,22 +1064,13 @@ def purchased_power(ferc1_raw_dfs, ferc1_transformed_dfs):
               'erg_charges': 'energy_charges',
               'othr_charges': 'other_charges',
               'settlement_tot': 'total_settlement'})
-          .replace({  # Remove all non-numeric characters from these columns
-              "billing_demand_mw": r"[^0-9\.]",
-              "non_coincident_peak_demand_mw": r"[^0-9\.]",
-              "coincident_peak_demand_mw": r"[^0-9\.]"}, '', regex=True)
-          .replace({  # If all that's left is a period, set to NaN.
-              "billing_demand_mw": ".",
-              "non_coincident_peak_demand_mw": ".",
-              "coincident_peak_demand_mw": "."}, np.nan)
-          .replace({  # Replace empty fields with NaN
-              "billing_demand_mw": "",
-              "non_coincident_peak_demand_mw": "",
-              "coincident_peak_demand_mw": ""}, np.nan)
-          .astype({  # Whatever is left can be cast to a float.
-              "billing_demand_mw": float,
-              "non_coincident_peak_demand_mw": float,
-              "coincident_peak_demand_mw": float})
+          .assign(  # Require these columns to numeric, or NaN
+        billing_demand_mw=lambda x: pd.to_numeric(
+            x.billing_demand_mw, errors="coerce"),
+        non_coincident_peak_demand_mw=lambda x: pd.to_numeric(
+            x.non_coincident_peak_demand_mw, errors="coerce"),
+        coincident_peak_demand_mw=lambda x: pd.to_numeric(
+            x.coincident_peak_demand_mw, errors="coerce"))
           .fillna({  # Replace blanks w/ 0.0 in data columns.
               "purchased_mwh": 0.0,
               "received_mwh": 0.0,
@@ -981,14 +1088,18 @@ def purchased_power(ferc1_raw_dfs, ferc1_transformed_dfs):
     df['purchase_type'] = df.purchase_type.replace(
         pc.ferc1_power_purchase_type)
 
-    # Drop records containing no useful data.
-    df = df.drop(df.loc[((df.purchased_mwh == 0) &
-                         (df.received_mwh == 0)
-                         & (df.delivered_mwh == 0)
-                         & (df.demand_charges == 0)
-                         & (df.energy_charges == 0)
-                         & (df.other_charges == 0)
-                         & (df.total_settlement == 0)), :].index)
+    # Drop records containing no useful data and also any completely duplicate
+    # records -- there are 6 in 1998 for utility 238 for some reason...
+    df = (
+        df.drop_duplicates()
+        .drop(df.loc[((df.purchased_mwh == 0)
+                      & (df.received_mwh == 0)
+                      & (df.delivered_mwh == 0)
+                      & (df.demand_charges == 0)
+                      & (df.energy_charges == 0)
+                      & (df.other_charges == 0)
+                      & (df.total_settlement == 0)), :].index)
+    )
 
     ferc1_transformed_dfs['purchased_power_ferc1'] = df
 
@@ -1004,7 +1115,7 @@ def accumulated_depreciation(ferc1_raw_dfs, ferc1_transformed_dfs):
 
     Args:
         ferc1_raw_dfs (dict): Each entry in this dictionary of DataFrame
-            objects corresponds to a table from the  FERC Form 1 DBC database.
+            objects corresponds to a table from the FERC Form 1 DBC database.
         ferc1_transformed_dfs (dict): A dictionary of DataFrames to be
             transformed.
 
@@ -1026,7 +1137,6 @@ def accumulated_depreciation(ferc1_raw_dfs, ferc1_transformed_dfs):
 
     ferc1_accumdepr_prvsn_df.rename(columns={
         # FERC1 DB   PUDL DB
-        'respondent_id': 'utility_id_ferc1',
         'total_cde': 'total'},
         inplace=True)
 
@@ -1046,6 +1156,7 @@ def transform(ferc1_raw_dfs, ferc1_tables=pc.pudl_tables['ferc1']):
 
     Returns:
         dict: A dictionary of the transformed DataFrames.
+
     """
     ferc1_transform_functions = {
         # fuel must come before steam b/c fuel proportions are used to aid in
@@ -1071,6 +1182,9 @@ def transform(ferc1_raw_dfs, ferc1_tables=pc.pudl_tables['ferc1']):
             ferc1_transform_functions[table](ferc1_raw_dfs,
                                              ferc1_transformed_dfs)
 
+    # convert types..
+    ferc1_transformed_dfs = pudl.helpers.convert_dfs_dict_dtypes(
+        ferc1_transformed_dfs, 'ferc1')
     return ferc1_transformed_dfs
 
 ###############################################################################
@@ -1201,26 +1315,34 @@ class FERCPlantClassifier(BaseEstimator, ClassifierMixin):
             raise RuntimeError(
                 "You must train classifer before predicting data!")
 
-        out_df = pd.DataFrame(columns=self._years)
-        out_idx = []
+        out_df = pd.DataFrame(
+            data=[],
+            index=pd.Index([], name="seed_id"),
+            columns=self._years)
+        tmp_best = (
+            self._best_of.loc[:, ["record_id"] + list(self._years)]
+            .append(pd.DataFrame(data=[""], index=[-1], columns=["record_id"]))
+        )
         # For each record_id we've been given:
         for x in X:
             # Find the index associated with the record ID we are predicting
             # a grouping for:
-            idx = self._best_of[self._best_of.record_id == x].index.values[0]
+            idx = tmp_best[tmp_best.record_id == x].index.values[0]
 
             # Mask the best_of dataframe, keeping only those entries where
             # the index of the chosen record_id appears -- this results in a
             # huge dataframe almost full of NaN values.
-            w_m = self._best_of[self._years][self._best_of[self._years] == idx]
-            # Grab the index values of the rows in the masked dataframe which
-            # are NOT all NaN -- these are the indices of the *other* records
-            # which found the record x to be one of their best matches.
-            w_m = w_m.dropna(how='all').index.values
+            w_m = (
+                tmp_best[self._years][tmp_best[self._years] == idx]
+                # Grab the index values of the rows in the masked dataframe which
+                # are NOT all NaN -- these are the indices of the *other* records
+                # which found the record x to be one of their best matches.
+                .dropna(how="all").index.values
+            )
 
             # Now look up the indices of the records which were found to be
             # best matches to the record x.
-            b_m = self._best_of.loc[idx, self._years].astype(int)
+            b_m = tmp_best.loc[idx, self._years].astype(int)
 
             # Here we require that there is no conflict between the two sets
             # of indices -- that every time a record shows up in a grouping,
@@ -1241,22 +1363,16 @@ class FERCPlantClassifier(BaseEstimator, ClassifierMixin):
                 # now it does what we want. We could use .iloc instead, but
                 # then the -1 sentinel value maps to the last entry in the
                 # dataframe, which also isn't what we want.  Blargh.
-                new_grp = self._best_of.loc[b_m, 'record_id']
-
-                # reshape into row, rather than column,
-                new_grp = new_grp.values.reshape(1, len(self._years))
+                new_grp = tmp_best.loc[b_m, "record_id"]
 
                 # Stack the new list of record_ids on our output DataFrame:
-                new_grp = pd.DataFrame(new_grp, columns=self._years)
-
-                out_df = pd.concat([out_df, new_grp])
-
-                # Save the seed record_id for use in indexing the output:
-                out_idx = out_idx + [self._best_of.loc[idx, 'record_id']]
-
-        out_df['seed_id'] = out_idx
-        out_df = out_df.set_index('seed_id')
-        out_df = out_df.fillna('')
+                out_df = out_df.append(
+                    pd.DataFrame(
+                        data=new_grp.values.reshape(1, len(self._years)),
+                        index=pd.Index(
+                            [tmp_best.loc[idx, "record_id"]],
+                            name="seed_id"),
+                        columns=self._years))
         return out_df
 
     def score(self, X, y=None):  # noqa: N803
@@ -1320,17 +1436,17 @@ class FERCPlantClassifier(BaseEstimator, ClassifierMixin):
         return out_df
 
 
-def make_ferc_clf(plants_df,
-                  ngram_min=2,
-                  ngram_max=10,
-                  min_sim=0.75,
-                  plant_name_wt=2.0,
-                  plant_type_wt=2.0,
-                  construction_type_wt=1.0,
-                  capacity_mw_wt=1.0,
-                  construction_year_wt=1.0,
-                  utility_id_ferc1_wt=1.0,
-                  fuel_fraction_wt=1.0):
+def make_ferc1_clf(plants_df,
+                   ngram_min=2,
+                   ngram_max=10,
+                   min_sim=0.75,
+                   plant_name_ferc1_wt=2.0,
+                   plant_type_wt=2.0,
+                   construction_type_wt=1.0,
+                   capacity_mw_wt=1.0,
+                   construction_year_wt=1.0,
+                   utility_id_ferc1_wt=1.0,
+                   fuel_fraction_wt=1.0):
     """
     Create a FERC Plant Classifier using several weighted features.
 
@@ -1361,7 +1477,7 @@ def make_ferc_clf(plants_df,
             vectorization of the plant_name feature.
         min_sim (float): the minimum cosine similarity between two records that
             can be considered a "match" (a number between 0.0 and 1.0).
-        plant_name_wt (float): weight used to determine the relative
+        plant_name_ferc1_wt (float): weight used to determine the relative
             importance of each of the features in the feature matrix used to
             calculate the cosine similarity between records. Used to scale each
             individual feature before the vectors are normalized.
@@ -1398,13 +1514,13 @@ def make_ferc_clf(plants_df,
     # Make a list of all the fuel fraction columns for use as one feature.
     fuel_cols = list(plants_df.filter(regex='.*_fraction_mmbtu$').columns)
 
-    ferc_pipe = Pipeline([
+    ferc1_pipe = Pipeline([
         ('preprocessor', ColumnTransformer(
             transformers=[
-                ('plant_name', TfidfVectorizer(
+                ('plant_name_ferc1', TfidfVectorizer(
                     analyzer='char',
                     ngram_range=(ngram_min, ngram_max)),
-                 'plant_name'),
+                 'plant_name_ferc1'),
                 ('plant_type', OneHotEncoder(
                     categories='auto'), ['plant_type']),
                 ('construction_type', OneHotEncoder(
@@ -1421,7 +1537,7 @@ def make_ferc_clf(plants_df,
             ],
 
             transformer_weights={
-                'plant_name': plant_name_wt,
+                'plant_name_ferc1': plant_name_ferc1_wt,
                 'plant_type': plant_type_wt,
                 'construction_type': construction_type_wt,
                 'capacity_mw': capacity_mw_wt,
@@ -1433,7 +1549,7 @@ def make_ferc_clf(plants_df,
         ('classifier', pudl.transform.ferc1.FERCPlantClassifier(
             min_sim=min_sim, plants_df=plants_df))
     ])
-    return ferc_pipe
+    return ferc1_pipe
 
 
 def fuel_by_plant_ferc1(fuel_df, thresh=0.5):
@@ -1466,13 +1582,13 @@ def fuel_by_plant_ferc1(fuel_df, thresh=0.5):
             the plant in that year. Default value: 0.5.
 
     Returns:
-        pandas.DataFrame: A DataFrame with a single record for each
-    plant-year, including the columns required to merge it with the
-    plants_steam_ferc1 table/DataFrame (report_year, utility_id_ferc1,
-    and plant_name) as well as totals for fuel mmbtu consumed in that
-    plant-year, and the cost of fuel in that year, the proportions of
-    heat content and fuel costs for each fuel in that year, and a
-    column that labels the plant's primary fuel for that year.
+        pandas.DataFrame: A DataFrame with a single record for each plant-year,
+        including the columns required to merge it with the plants_steam_ferc1
+        table/DataFrame (report_year, utility_id_ferc1, and plant_name) as well
+        as totals for fuel mmbtu consumed in that plant-year, and the cost of
+        fuel in that year, the proportions of heat content and fuel costs for
+        each fuel in that year, and a column that labels the plant's primary
+        fuel for that year.
 
     Raises:
         AssertionError: If the DataFrame input does not have the columns
@@ -1482,7 +1598,7 @@ def fuel_by_plant_ferc1(fuel_df, thresh=0.5):
     keep_cols = [
         'report_year',  # key
         'utility_id_ferc1',  # key
-        'plant_name',  # key
+        'plant_name_ferc1',  # key
         'fuel_type_code_pudl',  # pivot
         'fuel_qty_burned',  # value
         'fuel_mmbtu_per_unit',  # value
@@ -1507,10 +1623,10 @@ def fuel_by_plant_ferc1(fuel_df, thresh=0.5):
         # Drop the ratios and heterogeneous fuel "units"
         drop(['fuel_mmbtu_per_unit', 'fuel_cost_per_unit_burned', 'fuel_qty_burned'], axis=1).
         # Group by the keys and fuel type, and sum:
-        groupby(['utility_id_ferc1', 'plant_name', 'report_year', 'fuel_type_code_pudl']).
+        groupby(['utility_id_ferc1', 'plant_name_ferc1', 'report_year', 'fuel_type_code_pudl']).
         agg(sum).reset_index().
         # Set the index to the keys, and pivot to get per-fuel columns:
-        set_index(['utility_id_ferc1', 'plant_name', 'report_year']).
+        set_index(['utility_id_ferc1', 'plant_name_ferc1', 'report_year']).
         pivot(columns='fuel_type_code_pudl').fillna(0.0)
     )
 
@@ -1562,7 +1678,7 @@ def fuel_by_plant_ferc1(fuel_df, thresh=0.5):
         except KeyError:
             pass
 
-    df[['primary_fuel_by_cost', 'primary_fuel_by_mmbtu']] = \
-        df[['primary_fuel_by_cost', 'primary_fuel_by_mmbtu']].fillna('')
+    df[['primary_fuel_by_cost', 'primary_fuel_by_mmbtu']] = df[[
+        'primary_fuel_by_cost', 'primary_fuel_by_mmbtu']].fillna('')
 
     return df

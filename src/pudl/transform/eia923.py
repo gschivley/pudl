@@ -1,4 +1,3 @@
-
 """Routines specific to cleaning up EIA Form 923 data."""
 
 import logging
@@ -97,14 +96,6 @@ def _coalmine_cleanup(cmi_df):
         pandas.DataFrame: A cleaned DataFrame containing coalmine information.
 
     """
-    cmi_df = cmi_df.copy()
-    # Map mine type codes, which have changed over the years, to a few
-    # canonical values:
-    cmi_df['mine_type_code'].replace(
-        {'[pP]': 'P', 'U/S': 'US', 'S/U': 'SU', 'Su': 'S'},
-        inplace=True, regex=True)
-    cmi_df['state'] = cmi_df.state.replace(pc.coalmine_country_eia923)
-
     # Because we need to pull the mine_id_msha field into the FRC table,
     # but we don't know what that ID is going to be until we've populated
     # this table... we're going to functionally end up using the data in
@@ -116,24 +107,33 @@ def _coalmine_cleanup(cmi_df):
     # collisions).  We will need to do exactly the same transofrmations in the
     # FRC ingest function before merging these values in, or they won't match
     # up.
-
-    # Transform coalmine names to a canonical form to reduce duplicates:
-    # No leading or trailing whitespace:
-    cmi_df = pudl.helpers.strip_lower(cmi_df, columns=['mine_name'])
-    # remove all internal non-alphanumeric characters:
-    cmi_df['mine_name'] = \
-        cmi_df['mine_name'].replace('[^a-zA-Z0-9 -]', '', regex=True)
-
-    # Homogenize the data type that we're finding inside the county_id_fips
-    # field (ugh, Excel sheets!).  Mostly these are integers or NA values,
-    # but for imported coal, there are both 'IMP' and 'IM' string values.
-    # This should change it all to strings that are compatible with the
-    # Integer type within postgresql.
-    cmi_df['county_id_fips'].replace('[a-zA-Z]+',
-                                     value=np.nan,
-                                     regex=True,
-                                     inplace=True)
-    cmi_df['county_id_fips'] = cmi_df['county_id_fips'].astype(float)
+    cmi_df = (
+        cmi_df.assign(
+            # Map mine type codes, which have changed over the years, to a few
+            # canonical values:
+            mine_type_code=lambda x: x.mine_type_code.replace(
+                {'[pP]': 'P', 'U/S': 'US', 'S/U': 'SU', 'Su': 'S'},
+                regex=True),
+            # replace 2-letter country codes w/ ISO 3 letter as appropriate:
+            state=lambda x: x.state.replace(pc.coalmine_country_eia923),
+            # remove all internal non-alphanumeric characters:
+            mine_name=lambda x: x.mine_name.replace(
+                '[^a-zA-Z0-9 -]', '', regex=True),
+            # Homogenize the data type that we're finding inside the
+            # county_id_fips field (ugh, Excel sheets!).  Mostly these are
+            # integers or NA values, but for imported coal, there are both
+            # 'IMP' and 'IM' string values.
+            county_id_fips=lambda x: x.county_id_fips.replace(
+                '[a-zA-Z]+', value=np.nan, regex=True
+            )
+        )
+        # No leading or trailing whitespace:
+        .pipe(pudl.helpers.strip_lower, columns=["mine_name"])
+        .astype({"county_id_fips": float})
+        .astype({"county_id_fips": pd.Int64Dtype()})
+        .fillna({"mine_type_code": pd.NA})
+        .astype({"mine_type_code": pd.StringDtype()})
+    )
     return cmi_df
 
 ###############################################################################
@@ -157,8 +157,8 @@ def plants(eia923_dfs, eia923_transformed_dfs):
             dictionary of DataFrame objects corresponds to a page from the EIA
             923 form, as reported in the Excel spreadsheets they distribute.
         eia923_transformed_dfs (dict): A dictionary of DataFrame objects in
-          which pages from EIA923 form (keys) correspond to normalized
-          DataFrames of values from that page (values)
+            which pages from EIA923 form (keys) correspond to normalized
+            DataFrames of values from that page (values)
 
     Returns:
         dict: eia923_transformed_dfs, a dictionary of DataFrame objects in
@@ -182,16 +182,15 @@ def plants(eia923_dfs, eia923_transformed_dfs):
                                    'capacity_mw',
                                    'report_year']]
 
-    plant_info_df['reporting_frequency'] = \
-        plant_info_df.reporting_frequency.replace({'M': 'monthly',
-                                                   'A': 'annual'})
+    plant_info_df['reporting_frequency'] = plant_info_df.reporting_frequency.replace({'M': 'monthly',
+                                                                                      'A': 'annual'})
     # Since this is a plain Yes/No variable -- just make it a real sa.Boolean.
     plant_info_df.combined_heat_power.replace({'N': False, 'Y': True},
                                               inplace=True)
 
     # Get rid of excessive whitespace introduced to break long lines (ugh)
-    plant_info_df.census_region = \
-        plant_info_df.census_region.str.replace(' ', '')
+    plant_info_df.census_region = plant_info_df.census_region.str.replace(
+        ' ', '')
     plant_info_df.drop_duplicates(subset='plant_id_eia')
 
     plant_info_df['plant_id_eia'] = plant_info_df['plant_id_eia'].astype(int)
@@ -209,8 +208,8 @@ def generation_fuel(eia923_dfs, eia923_transformed_dfs):
             dictionary of DataFrame objects corresponds to a page from the
             EIA923 form, as reported in the Excel spreadsheets they distribute.
         eia923_transformed_dfs (dict): A dictionary of DataFrame objects in
-          which pages from EIA923 form (keys) correspond to normalized
-          DataFrames of values from that page (values)
+            which pages from EIA923 form (keys) correspond to normalized
+            DataFrames of values from that page (values)
 
     Returns:
         dict: eia923_transformed_dfs, a dictionary of DataFrame objects in
@@ -223,7 +222,7 @@ def generation_fuel(eia923_dfs, eia923_transformed_dfs):
 
     # Drop fields we're not inserting into the generation_fuel_eia923 table.
     cols_to_drop = ['combined_heat_power',
-                    'plant_name',
+                    'plant_name_eia',
                     'operator_name',
                     'operator_id',
                     'plant_state',
@@ -248,9 +247,8 @@ def generation_fuel(eia923_dfs, eia923_transformed_dfs):
     # any particular plant (they have plant_id_eia == operator_id == 99999)
     gf_df = gf_df[gf_df.plant_id_eia != 99999]
 
-    gf_df['fuel_type_code_pudl'] = \
-        pudl.helpers.cleanstrings_series(gf_df.fuel_type,
-                                         pc.fuel_type_eia923_gen_fuel_simple_map)
+    gf_df['fuel_type_code_pudl'] = pudl.helpers.cleanstrings_series(gf_df.fuel_type,
+                                                                    pc.fuel_type_eia923_gen_fuel_simple_map)
 
     # Convert Year/Month columns into a single Date column...
     gf_df = pudl.helpers.convert_to_date(gf_df)
@@ -268,8 +266,8 @@ def boiler_fuel(eia923_dfs, eia923_transformed_dfs):
             dictionary of DataFrame objects corresponds to a page from the
             EIA923 form, as reported in the Excel spreadsheets they distribute.
         eia923_transformed_dfs (dict): A dictionary of DataFrame objects in
-          which pages from EIA923 form (keys) correspond to normalized
-          DataFrames of values from that page (values)
+            which pages from EIA923 form (keys) correspond to normalized
+            DataFrames of values from that page (values)
 
     Returns:
         dict: eia923_transformed_dfs, a dictionary of DataFrame objects in
@@ -281,7 +279,7 @@ def boiler_fuel(eia923_dfs, eia923_transformed_dfs):
 
     # Drop fields we're not inserting into the boiler_fuel_eia923 table.
     cols_to_drop = ['combined_heat_power',
-                    'plant_name',
+                    'plant_name_eia',
                     'operator_name',
                     'operator_id',
                     'plant_state',
@@ -299,10 +297,9 @@ def boiler_fuel(eia923_dfs, eia923_transformed_dfs):
     # Convert the EIA923 DataFrame from yearly to monthly records.
     bf_df = _yearly_to_monthly_records(
         bf_df, pc.month_dict_eia923)
-    bf_df['fuel_type_code_pudl'] = \
-        pudl.helpers.cleanstrings_series(
-            bf_df.fuel_type_code,
-            pc.fuel_type_eia923_boiler_fuel_simple_map)
+    bf_df['fuel_type_code_pudl'] = pudl.helpers.cleanstrings_series(
+        bf_df.fuel_type_code,
+        pc.fuel_type_eia923_boiler_fuel_simple_map)
     # Replace the EIA923 NA value ('.') with a real NA value.
     bf_df = pudl.helpers.fix_eia_na(bf_df)
 
@@ -322,8 +319,8 @@ def generation(eia923_dfs, eia923_transformed_dfs):
             dictionary of DataFrame objects corresponds to a page from the
             EIA923 form, as reported in the Excel spreadsheets they distribute.
         eia923_transformed_dfs (dict): A dictionary of DataFrame objects in
-          which pages from EIA923 form (keys) correspond to normalized
-          DataFrames of values from that page (values)
+            which pages from EIA923 form (keys) correspond to normalized
+            DataFrames of values from that page (values)
 
     Returns:
         dict: eia923_transformed_dfs, a dictionary of DataFrame objects in
@@ -331,37 +328,34 @@ def generation(eia923_dfs, eia923_transformed_dfs):
         DataFrames of values from that page (values).
 
     """
-    # This needs to be a copy of what we're passed in so we can edit it.
-    generation_df = eia923_dfs['generator'].copy()
+    gen_df = (
+        eia923_dfs['generator']
+        .dropna(subset=['generator_id'])
+        .drop(['combined_heat_power',
+               'plant_name_eia',
+               'operator_name',
+               'operator_id',
+               'plant_state',
+               'census_region',
+               'nerc_region',
+               'naics_code',
+               'eia_sector',
+               'sector_name',
+               'net_generation_mwh_year_to_date'],
+              axis="columns")
+        .pipe(_yearly_to_monthly_records, pc.month_dict_eia923)
+        .pipe(pudl.helpers.fix_eia_na)
+        .pipe(pudl.helpers.convert_to_date)
+    )
+    # There are a few hundred (out of a few hundred thousand) records which
+    # have duplicate records for a given generator/date combo. However, in all
+    # cases one of them has no data (net_generation_mwh) associated with it,
+    # so it's pretty clear which one to drop.
+    unique_subset = ["report_date", "plant_id_eia", "generator_id"]
+    dupes = gen_df[gen_df.duplicated(subset=unique_subset, keep=False)]
+    gen_df = gen_df.drop(dupes.net_generation_mwh.isna().index)
 
-    # Drop fields we're not inserting into the generation_eia923_fuel_eia923
-    # table.
-    cols_to_drop = ['combined_heat_power',
-                    'plant_name',
-                    'operator_name',
-                    'operator_id',
-                    'plant_state',
-                    'census_region',
-                    'nerc_region',
-                    'naics_code',
-                    'eia_sector',
-                    'sector_name',
-                    'net_generation_mwh_year_to_date']
-
-    generation_df.dropna(subset=['generator_id'], inplace=True)
-
-    generation_df.drop(cols_to_drop, axis=1, inplace=True)
-
-    # Convert the EIA923 DataFrame from yearly to monthly records.
-    generation_df = _yearly_to_monthly_records(
-        generation_df, pc.month_dict_eia923)
-    # Replace the EIA923 NA value ('.') with a real NA value.
-    generation_df = pudl.helpers.fix_eia_na(generation_df)
-
-    # Convert Year/Month columns into a single Date column...
-    generation_df = pudl.helpers.convert_to_date(generation_df)
-
-    eia923_transformed_dfs['generation_eia923'] = generation_df
+    eia923_transformed_dfs['generation_eia923'] = gen_df
 
     return eia923_transformed_dfs
 
@@ -407,8 +401,7 @@ def coalmine(eia923_dfs, eia923_transformed_dfs):
     # data frame, drop duplicates, and then bring the unique mine records
     # back into the overall CMI dataframe...
     cmi_with_msha = cmi_df[cmi_df['mine_id_msha'] > 0]
-    cmi_with_msha = \
-        cmi_with_msha.drop_duplicates(subset=['mine_id_msha', ])
+    cmi_with_msha = cmi_with_msha.drop_duplicates(subset=['mine_id_msha', ])
     cmi_df.drop(cmi_df[cmi_df['mine_id_msha'] > 0].index)
     cmi_df.append(cmi_with_msha)
 
@@ -463,7 +456,7 @@ def fuel_receipts_costs(eia923_dfs, eia923_transformed_dfs):
 
     # Drop fields we're not inserting into the fuel_receipts_costs_eia923
     # table.
-    cols_to_drop = ['plant_name',
+    cols_to_drop = ['plant_name_eia',
                     'plant_state',
                     'operator_name',
                     'operator_id',
@@ -532,6 +525,11 @@ def fuel_receipts_costs(eia923_dfs, eia923_transformed_dfs):
              unmapped='')
     )
 
+    # Remove known to be invalid mercury content values. Almost all of these
+    # occur in the 2012 data. Real values should be <0.25ppm.
+    bad_hg_idx = frc_df.mercury_content_ppm >= 7.0
+    frc_df.loc[bad_hg_idx, "mercury_content_ppm"] = np.nan
+
     eia923_transformed_dfs['fuel_receipts_costs_eia923'] = frc_df
 
     return eia923_transformed_dfs
@@ -547,9 +545,10 @@ def transform(eia923_raw_dfs, eia923_tables=pc.eia923_pudl_tables):
             pulled into PUDL.
 
     Returns:
-        dict: A dictionary of DataFrame objects in
-        which pages from EIA923 form (keys) corresponds to a normalized
-        DataFrame of values from that page (values)
+        dict: A dictionary of DataFrame with table names as keys and
+        :class:`pandas.DataFrame` objects as values, where the contents of the
+        DataFrames correspond to cleaned and normalized PUDL database tables,
+        ready for loading.
 
     """
     eia923_transform_functions = {

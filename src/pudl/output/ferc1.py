@@ -1,154 +1,118 @@
 """Functions for pulling FERC Form 1 data out of the PUDL DB."""
 
 import pandas as pd
-import sqlalchemy as sa
 
 import pudl
 
 
-def plants_utils_ferc1(pudl_engine, pt):
+def plants_utils_ferc1(pudl_engine):
     """
     Build a dataframe of useful FERC Plant & Utility information.
 
     Args:
         pudl_engine (sqlalchemy.engine.Engine): Engine for connecting to the
             PUDL database.
-        pt (immutabledict): a sqlalchemy metadata dictionary of pudl tables
 
     Returns:
         pandas.DataFrame: A DataFrame containing useful FERC Form 1 Plant and
         Utility information.
+
     """
-    utils_ferc_tbl = pt['utilities_ferc']
-    utils_ferc_select = sa.sql.select([utils_ferc_tbl, ])
-    utils_ferc = pd.read_sql(utils_ferc_select, pudl_engine)
-
-    plants_ferc_tbl = pt['plants_ferc']
-    plants_ferc_select = sa.sql.select([plants_ferc_tbl, ])
-    plants_ferc = pd.read_sql(plants_ferc_select, pudl_engine)
-
-    out_df = pd.merge(plants_ferc, utils_ferc, on='utility_id_ferc1')
-    return out_df
+    pu_df = pd.merge(
+        pd.read_sql("plants_ferc1", pudl_engine),
+        pd.read_sql("utilities_ferc1", pudl_engine),
+        on="utility_id_ferc1")
+    return pu_df
 
 
-def plants_steam_ferc1(pudl_engine, pt):
+def plants_steam_ferc1(pudl_engine):
     """Select and joins some useful fields from the FERC Form 1 steam table.
 
     Select the FERC Form 1 steam plant table entries, add in the reporting
     utility's name, and the PUDL ID for the plant and utility for readability
     and integration with other tables that have PUDL IDs.
 
+    Also calculates ``capacity_factor`` (based on ``net_generation_mwh`` &
+    ``capacity_mw``)
+
     Args:
         pudl_engine (sqlalchemy.engine.Engine): Engine for connecting to the
             PUDL database.
-        pt (immutabledict): a sqlalchemy metadata dictionary of pudl tables
 
     Returns:
         pandas.DataFrame: A DataFrame containing useful fields from the FERC
         Form 1 steam table.
 
     """
-    steam_ferc1_tbl = pt['plants_steam_ferc1']
-    steam_ferc1_select = sa.sql.select([steam_ferc1_tbl, ])
-    steam_df = pd.read_sql(steam_ferc1_select, pudl_engine)
-
-    pu_ferc = plants_utils_ferc1(pudl_engine, pt)
-
-    out_df = pd.merge(steam_df, pu_ferc, on=['utility_id_ferc1', 'plant_name'])
-
-    first_cols = [
-        'report_year',
-        'utility_id_ferc1',
-        'utility_id_pudl',
-        'utility_name_ferc1',
-        'plant_id_pudl',
-        'plant_id_ferc1',
-        'plant_name'
-    ]
-
-    out_df = pudl.helpers.organize_cols(out_df, first_cols)
-
-    return out_df
+    steam_df = (
+        pd.read_sql("plants_steam_ferc1", pudl_engine)
+        .drop('id', axis="columns")
+        .merge(plants_utils_ferc1(pudl_engine),
+               on=['utility_id_ferc1', 'plant_name_ferc1'])
+        .assign(capacity_factor=lambda x: x.net_generation_mwh / (8760 * x.capacity_mw),
+                opex_fuel_per_mwh=lambda x: x.opex_fuel / x.net_generation_mwh,
+                opex_nonfuel_per_mwh=lambda x: (x.opex_production_total - x.opex_fuel) / x.net_generation_mwh)
+        .pipe(pudl.helpers.organize_cols, ['report_year',
+                                           'utility_id_ferc1',
+                                           'utility_id_pudl',
+                                           'utility_name_ferc1',
+                                           'plant_id_pudl',
+                                           'plant_id_ferc1',
+                                           'plant_name_ferc1'])
+    )
+    return steam_df
 
 
-def fuel_ferc1(pudl_engine, pt):
+def fuel_ferc1(pudl_engine):
     """Pull a useful dataframe related to FERC Form 1 fuel information.
 
     This function pulls the FERC Form 1 fuel data, and joins in the name of the
     reporting utility, as well as the PUDL IDs for that utility and the plant,
     allowing integration with other PUDL tables.
 
-    Also calculates the total heat content consumed for each fuel, and the
-    total cost for each fuel. Total cost is calculated in two different ways,
-    on the basis of fuel units consumed(e.g. tons of coal, mcf of gas) and
-    on the basis of heat content consumed. In theory these should give the
-    same value for total cost, but this is not always the case.
+    Useful derived values include:
 
-    Todo:
-        Check whether this includes all of the fuel_ferc1 fields...
+    * ``fuel_consumed_mmbtu`` (total fuel heat content consumed)
+    * ``fuel_consumed_total_cost`` (total cost of that fuel)
 
     Args:
         pudl_engine (sqlalchemy.engine.Engine): Engine for connecting to the
             PUDL database.
-        pt (immutabledict): a sqlalchemy metadata dictionary of pudl tables
 
     Returns:
         pandas.DataFrame: A DataFrame containing useful FERC Form 1 fuel
         information.
 
     """
-    fuel_ferc1_tbl = pt['fuel_ferc1']
-    fuel_ferc1_select = sa.sql.select([fuel_ferc1_tbl, ])
-    fuel_df = pd.read_sql(fuel_ferc1_select, pudl_engine)
-
-    # In theory there are two different ways that we can figure out the total
-    # cost of the fuel:
-    #  * based on the cost per unit (e.g. ton) burned, and the total number
-    #    of units burned,
-    #  * based on the cost per mmbtu, the mmbtu per unit, and the total
-    #    number of units burned.
-    # In theory, these two unmbers should be the same, and they should both be
-    # the same as the opex_fuel cost that is reported in the steam table, when
-    # all the fuel costs for a given plant are added up across the different
-    # fuels.  However, in practice, the simpler calculation based only on the
-    # number of units burned and the cost per unit, gives a value that is more
-    # consistent with the steam table value, so we will only calculate that
-    # value for the outputs.
-    fuel_df['fuel_consumed_mmbtu'] = \
-        fuel_df['fuel_qty_burned'] * fuel_df['fuel_mmbtu_per_unit']
-    fuel_df['fuel_consumed_total_cost'] = \
-        fuel_df['fuel_qty_burned'] * fuel_df['fuel_cost_per_unit_burned']
-
-    pu_ferc = plants_utils_ferc1(pudl_engine, pt)
-
-    out_df = pd.merge(fuel_df, pu_ferc, on=['utility_id_ferc1', 'plant_name'])
-    out_df = out_df.drop('id', axis=1)
-
-    first_cols = [
-        'report_year',
-        'utility_id_ferc1',
-        'utility_id_pudl',
-        'utility_name_ferc1',
-        'plant_id_pudl',
-        'plant_name'
-    ]
-
-    out_df = pudl.helpers.organize_cols(out_df, first_cols)
-
-    return out_df
+    fuel_df = (
+        pd.read_sql("fuel_ferc1", pudl_engine).
+        drop('id', axis="columns").
+        assign(fuel_consumed_mmbtu=lambda x: x["fuel_qty_burned"] * x["fuel_mmbtu_per_unit"],
+               fuel_consumed_total_cost=lambda x: x["fuel_qty_burned"] * x["fuel_cost_per_unit_burned"]).
+        merge(plants_utils_ferc1(pudl_engine),
+              on=['utility_id_ferc1', 'plant_name_ferc1']).
+        pipe(pudl.helpers.organize_cols, ['report_year',
+                                          'utility_id_ferc1',
+                                          'utility_id_pudl',
+                                          'utility_name_ferc1',
+                                          'plant_id_pudl',
+                                          'plant_name_ferc1'])
+    )
+    return fuel_df
 
 
-def fuel_by_plant_ferc1(pudl_engine, pt, thresh=0.5):
+def fuel_by_plant_ferc1(pudl_engine, thresh=0.5):
     """Summarize FERC fuel data by plant for output.
 
-    This is mostly a wrapper around pudl.transform.ferc1.fuel_by_plant_ferc1
+    This is mostly a wrapper around
+    :func:`pudl.transform.ferc1.fuel_by_plant_ferc1`
     which calculates some summary values on a per-plant basis (as indicated
-    by utility_id_ferc1 and plant_name) related to fuel consumption.
+    by ``utility_id_ferc1`` and ``plant_name_ferc1``) related to fuel
+    consumption.
 
     Args:
         pudl_engine (sqlalchemy.engine.Engine): Engine for connecting to the
             PUDL database.
-        pt (immutabledict): a sqlalchemy metadata dictionary of pudl tables
         thresh (float): Minimum fraction of fuel (cost and mmbtu) required in
             order for a plant to be assigned a primary fuel. Must be between
             0.5 and 1.0. default value is 0.5.
@@ -157,21 +121,102 @@ def fuel_by_plant_ferc1(pudl_engine, pt, thresh=0.5):
         pandas.DataFrame: A DataFrame with fuel use summarized by plant.
 
     """
-    first_cols = [
-        'report_year',
-        'utility_id_ferc1',
-        'utility_id_pudl',
-        'utility_name_ferc1',
-        'plant_id_pudl',
-        'plant_name'
-    ]
-
     fbp_df = (
-        pd.read_sql_table('fuel_ferc1', pudl_engine).
-        drop(['id'], axis=1).
-        pipe(pudl.transform.ferc1.fuel_by_plant_ferc1, thresh=thresh).
-        merge(plants_utils_ferc1(pudl_engine, pt),
-              on=['utility_id_ferc1', 'plant_name']).
-        pipe(pudl.helpers.organize_cols, first_cols)
+        pd.read_sql_table('fuel_ferc1', pudl_engine)
+        .drop(['id'], axis="columns")
+        .pipe(pudl.transform.ferc1.fuel_by_plant_ferc1, thresh=thresh)
+        .merge(plants_utils_ferc1(pudl_engine),
+               on=['utility_id_ferc1', 'plant_name_ferc1'])
+        .pipe(pudl.helpers.organize_cols, ['report_year',
+                                           'utility_id_ferc1',
+                                           'utility_id_pudl',
+                                           'utility_name_ferc1',
+                                           'plant_id_pudl',
+                                           'plant_name_ferc1'])
     )
     return fbp_df
+
+
+def plants_small_ferc1(pudl_engine):
+    """Pull a useful dataframe related to the FERC Form 1 small plants."""
+    plants_small_df = (
+        pd.read_sql_table("plants_small_ferc1", pudl_engine)
+        .drop(['id'], axis="columns")
+        .merge(pd.read_sql_table("utilities_ferc1", pudl_engine),
+               on="utility_id_ferc1")
+        .pipe(pudl.helpers.organize_cols, ['report_year',
+                                           'utility_id_ferc1',
+                                           'utility_id_pudl',
+                                           'utility_name_ferc1',
+                                           "plant_name_original",
+                                           'plant_name_ferc1',
+                                           "record_id"])
+    )
+    return plants_small_df
+
+
+def plants_hydro_ferc1(pudl_engine):
+    """Pull a useful dataframe related to the FERC Form 1 hydro plants."""
+    plants_hydro_df = (
+        pd.read_sql_table("plants_hydro_ferc1", pudl_engine)
+        .drop(['id'], axis="columns")
+        .merge(plants_utils_ferc1(pudl_engine),
+               on=["utility_id_ferc1", "plant_name_ferc1"])
+        .pipe(pudl.helpers.organize_cols, ["report_year",
+                                           "utility_id_ferc1",
+                                           "utility_id_pudl",
+                                           "utility_name_ferc1",
+                                           "plant_name_ferc1",
+                                           "record_id"])
+    )
+    return plants_hydro_df
+
+
+def plants_pumped_storage_ferc1(pudl_engine):
+    """Pull a dataframe of FERC Form 1 Pumped Storage plant data."""
+    pumped_storage_df = (
+        pd.read_sql_table("plants_pumped_storage_ferc1", pudl_engine)
+        .drop(['id'], axis="columns")
+        .merge(pudl.output.ferc1.plants_utils_ferc1(pudl_engine),
+               on=["utility_id_ferc1", "plant_name_ferc1"])
+        .pipe(pudl.helpers.organize_cols, ["report_year",
+                                           "utility_id_ferc1",
+                                           "utility_id_pudl",
+                                           "utility_name_ferc1",
+                                           "plant_name_ferc1",
+                                           "record_id"])
+    )
+    return pumped_storage_df
+
+
+def purchased_power_ferc1(pudl_engine):
+    """Pull a useful dataframe of FERC Form 1 Purchased Power data."""
+    purchased_power_df = (
+        pd.read_sql_table("purchased_power_ferc1", pudl_engine)
+        .drop(['id'], axis="columns")
+        .merge(pd.read_sql_table("utilities_ferc1", pudl_engine),
+               on="utility_id_ferc1")
+        .pipe(pudl.helpers.organize_cols, ["report_year",
+                                           "utility_id_ferc1",
+                                           "utility_id_pudl",
+                                           "utility_name_ferc1",
+                                           "seller_name",
+                                           "record_id"])
+    )
+    return purchased_power_df
+
+
+def plant_in_service_ferc1(pudl_engine):
+    """Pull a dataframe of FERC Form 1 Electric Plant in Service data."""
+    pis_df = (
+        pd.read_sql_table("plant_in_service_ferc1", pudl_engine)
+        .merge(pd.read_sql_table("utilities_ferc1", pudl_engine),
+               on="utility_id_ferc1")
+        .pipe(pudl.helpers.organize_cols, ["report_year",
+                                           "utility_id_ferc1",
+                                           "utility_id_pudl",
+                                           "utility_name_ferc1",
+                                           "record_id",
+                                           "amount_type"])
+    )
+    return pis_df

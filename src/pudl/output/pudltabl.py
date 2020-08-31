@@ -15,8 +15,8 @@ PUDL database, but should serve as a generally usable set of PUDL data
 products.
 
 The PudlTabl class can also provide access to complex derived values, like the
-generator and plat level marginal cost of electricity (MCOE), which are defined
-in the analysis module.
+generator and plant level marginal cost of electricity (MCOE), which are
+defined in the analysis module.
 
 In the long run, this is a probably a kind of prototype for pre-packaged API
 outputs or data products that we might want to be able to provide to users a la
@@ -42,8 +42,8 @@ import pudl.constants as pc
 class PudlTabl(object):
     """A class for compiling common useful tabular outputs from the PUDL DB."""
 
-    def __init__(self, freq=None, start_date=None, end_date=None,
-                 pudl_engine=None):
+    def __init__(self, pudl_engine, freq=None, start_date=None, end_date=None,
+                 rolling=False):
         """
         Initialize the PUDL output object.
 
@@ -62,6 +62,9 @@ class PudlTabl(object):
             end_date (date): End date for data to pull from the PUDL DB.
             pudl_engine (sqlalchemy.engine.Engine): SQLAlchemy connection engine
                 for the PUDL DB.
+            rolling (boolean): if set to True, apply a rolling average to a
+                subset of output table's columns (currently only
+                'fuel_cost_per_mmbtu' for the frc table).
 
         """
         self.pudl_engine = pudl_engine
@@ -87,34 +90,39 @@ class PudlTabl(object):
             raise AssertionError('PudlTabl object needs a pudl_engine')
         self.pudl_engine = pudl_engine
 
-        self.pt = get_table_meta(self.pudl_engine)
+        self.rolling = rolling
         # We populate this library of dataframes as they are generated, and
         # allow them to persist, in case they need to be used again.
         self._dfs = {
-            'pu_eia': None,
-            'pu_ferc1': None,
+            "pu_eia": None,
+            "pu_ferc1": None,
 
-            'utils_eia860': None,
-            'bga_eia860': None,
-            'plants_eia860': None,
-            'gens_eia860': None,
-            'own_eia860': None,
+            "utils_eia860": None,
+            "bga_eia860": None,
+            "plants_eia860": None,
+            "gens_eia860": None,
+            "own_eia860": None,
 
-            'gf_eia923': None,
-            'frc_eia923': None,
-            'bf_eia923': None,
-            'gen_eia923': None,
+            "gf_eia923": None,
+            "frc_eia923": None,
+            "bf_eia923": None,
+            "gen_eia923": None,
 
-            'plants_steam_ferc1': None,
-            'fuel_ferc1': None,
-            'fbp_ferc1': None,
+            "plants_steam_ferc1": None,
+            "fuel_ferc1": None,
+            "fbp_ferc1": None,
+            "plants_small_ferc1": None,
+            "plants_hydro_ferc1": None,
+            "plants_pumped_storage_ferc1": None,
+            "purchased_power_ferc1": None,
+            "plant_in_service_ferc1": None,
 
-            'bga': None,
-            'hr_by_unit': None,
-            'hr_by_gen': None,
-            'fuel_cost': None,
-            'capacity_factor': None,
-            'mcoe': None,
+            "bga": None,
+            "hr_by_unit": None,
+            "hr_by_gen": None,
+            "fuel_cost": None,
+            "capacity_factor": None,
+            "mcoe": None,
         }
 
     def pu_eia860(self, update=False):
@@ -126,13 +134,12 @@ class PudlTabl(object):
                 a cached version exists.
 
         Returns:
-            :mod:`pandas.DataFrame`: a denormalized table for interactive use.
+            pandas.DataFrame: a denormalized table for interactive use.
 
         """
         if update or self._dfs['pu_eia'] is None:
             self._dfs['pu_eia'] = pudl.output.eia860.plants_utils_eia860(
                 self.pudl_engine,
-                self.pt,
                 start_date=self.start_date,
                 end_date=self.end_date)
         return self._dfs['pu_eia']
@@ -146,14 +153,17 @@ class PudlTabl(object):
                 a cached version exists.
 
         Returns:
-            :mod:`pandas.DataFrame`: a denormalized table for interactive use.
+            pandas.DataFrame: a denormalized table for interactive use.
 
         """
         if update or self._dfs['pu_ferc1'] is None:
             self._dfs['pu_ferc1'] = pudl.output.ferc1.plants_utils_ferc1(
-                self.pudl_engine, self.pt)
+                self.pudl_engine)
         return self._dfs['pu_ferc1']
 
+    ###########################################################################
+    # EIA 860/923 OUTPUTS
+    ###########################################################################
     def utils_eia860(self, update=False):
         """
         Pull a dataframe describing utilities reported in EIA 860.
@@ -163,13 +173,12 @@ class PudlTabl(object):
                 a cached version exists.
 
         Returns:
-            :mod:`pandas.DataFrame`: a denormalized table for interactive use.
+            pandas.DataFrame: a denormalized table for interactive use.
 
         """
         if update or self._dfs['utils_eia860'] is None:
             self._dfs['utils_eia860'] = pudl.output.eia860.utilities_eia860(
                 self.pudl_engine,
-                self.pt,
                 start_date=self.start_date,
                 end_date=self.end_date)
         return self._dfs['utils_eia860']
@@ -183,14 +192,13 @@ class PudlTabl(object):
                 a cached version exists.
 
         Returns:
-            :mod:`pandas.DataFrame`: a denormalized table for interactive use.
+            pandas.DataFrame: a denormalized table for interactive use.
 
         """
         if update or self._dfs['bga_eia860'] is None:
             self._dfs['bga_eia860'] = \
                 pudl.output.eia860.boiler_generator_assn_eia860(
                     self.pudl_engine,
-                    self.pt,
                     start_date=self.start_date,
                     end_date=self.end_date)
         return self._dfs['bga_eia860']
@@ -204,13 +212,12 @@ class PudlTabl(object):
                 a cached version exists.
 
         Returns:
-            :mod:`pandas.DataFrame`: a denormalized table for interactive use.
+            pandas.DataFrame: a denormalized table for interactive use.
 
         """
         if update or self._dfs['plants_eia860'] is None:
             self._dfs['plants_eia860'] = pudl.output.eia860.plants_eia860(
                 self.pudl_engine,
-                self.pt,
                 start_date=self.start_date,
                 end_date=self.end_date,)
         return self._dfs['plants_eia860']
@@ -224,13 +231,12 @@ class PudlTabl(object):
                 a cached version exists.
 
         Returns:
-            :mod:`pandas.DataFrame`: a denormalized table for interactive use.
+            pandas.DataFrame: a denormalized table for interactive use.
 
         """
         if update or self._dfs['gens_eia860'] is None:
             self._dfs['gens_eia860'] = pudl.output.eia860.generators_eia860(
                 self.pudl_engine,
-                self.pt,
                 start_date=self.start_date,
                 end_date=self.end_date)
         return self._dfs['gens_eia860']
@@ -244,13 +250,12 @@ class PudlTabl(object):
                 a cached version exists.
 
         Returns:
-            :mod:`pandas.DataFrame`: a denormalized table for interactive use.
+            pandas.DataFrame: a denormalized table for interactive use.
 
         """
         if update or self._dfs['own_eia860'] is None:
             self._dfs['own_eia860'] = pudl.output.eia860.ownership_eia860(
                 self.pudl_engine,
-                self.pt,
                 start_date=self.start_date,
                 end_date=self.end_date)
         return self._dfs['own_eia860']
@@ -264,14 +269,13 @@ class PudlTabl(object):
                 a cached version exists.
 
         Returns:
-            :mod:`pandas.DataFrame`: a denormalized table for interactive use.
+            pandas.DataFrame: a denormalized table for interactive use.
 
         """
         if update or self._dfs['gf_eia923'] is None:
             self._dfs['gf_eia923'] = \
                 pudl.output.eia923.generation_fuel_eia923(
                     self.pudl_engine,
-                    self.pt,
                     freq=self.freq,
                     start_date=self.start_date,
                     end_date=self.end_date)
@@ -286,17 +290,17 @@ class PudlTabl(object):
                 a cached version exists.
 
         Returns:
-            :mod:`pandas.DataFrame`: a denormalized table for interactive use.
+            pandas.DataFrame: a denormalized table for interactive use.
 
         """
         if update or self._dfs['frc_eia923'] is None:
             self._dfs['frc_eia923'] = \
                 pudl.output.eia923.fuel_receipts_costs_eia923(
                     self.pudl_engine,
-                    self.pt,
                     freq=self.freq,
                     start_date=self.start_date,
-                    end_date=self.end_date)
+                    end_date=self.end_date,
+                    rolling=self.rolling)
         return self._dfs['frc_eia923']
 
     def bf_eia923(self, update=False):
@@ -308,13 +312,12 @@ class PudlTabl(object):
                 a cached version exists.
 
         Returns:
-            :mod:`pandas.DataFrame`: a denormalized table for interactive use.
+            pandas.DataFrame: a denormalized table for interactive use.
 
         """
         if update or self._dfs['bf_eia923'] is None:
             self._dfs['bf_eia923'] = pudl.output.eia923.boiler_fuel_eia923(
                 self.pudl_engine,
-                self.pt,
                 freq=self.freq,
                 start_date=self.start_date,
                 end_date=self.end_date)
@@ -329,18 +332,20 @@ class PudlTabl(object):
                 a cached version exists.
 
         Returns:
-            :mod:`pandas.DataFrame`: a denormalized table for interactive use.
+            pandas.DataFrame: a denormalized table for interactive use.
 
         """
         if update or self._dfs['gen_eia923'] is None:
             self._dfs['gen_eia923'] = pudl.output.eia923.generation_eia923(
                 self.pudl_engine,
-                self.pt,
                 freq=self.freq,
                 start_date=self.start_date,
                 end_date=self.end_date)
         return self._dfs['gen_eia923']
 
+    ###########################################################################
+    # FERC FORM 1 OUTPUTS
+    ###########################################################################
     def plants_steam_ferc1(self, update=False):
         """
         Pull the FERC Form 1 steam plants data.
@@ -350,12 +355,12 @@ class PudlTabl(object):
                 a cached version exists.
 
         Returns:
-            :mod:`pandas.DataFrame`: a denormalized table for interactive use.
+            pandas.DataFrame: a denormalized table for interactive use.
 
         """
         if update or self._dfs['plants_steam_ferc1'] is None:
             self._dfs['plants_steam_ferc1'] = \
-                pudl.output.ferc1.plants_steam_ferc1(self.pudl_engine, self.pt)
+                pudl.output.ferc1.plants_steam_ferc1(self.pudl_engine)
         return self._dfs['plants_steam_ferc1']
 
     def fuel_ferc1(self, update=False):
@@ -367,12 +372,12 @@ class PudlTabl(object):
                 a cached version exists.
 
         Returns:
-            :mod:`pandas.DataFrame`: a denormalized table for interactive use.
+            pandas.DataFrame: a denormalized table for interactive use.
 
         """
         if update or self._dfs['fuel_ferc1'] is None:
             self._dfs['fuel_ferc1'] = pudl.output.ferc1.fuel_ferc1(
-                self.pudl_engine, self.pt)
+                self.pudl_engine)
         return self._dfs['fuel_ferc1']
 
     def fbp_ferc1(self, update=False):
@@ -384,14 +389,102 @@ class PudlTabl(object):
                 a cached version exists.
 
         Returns:
-            :mod:`pandas.DataFrame`: a denormalized table for interactive use.
+            pandas.DataFrame: a denormalized table for interactive use.
 
         """
         if update or self._dfs['fbp_ferc1'] is None:
             self._dfs['fbp_ferc1'] = pudl.output.ferc1.fuel_by_plant_ferc1(
-                self.pudl_engine, self.pt)
+                self.pudl_engine)
         return self._dfs['fbp_ferc1']
 
+    def plants_small_ferc1(self, update=False):
+        """
+        Pull the FERC Form 1 Small Plants Table.
+
+        Args:
+            update (bool): If true, re-calculate the output dataframe, even if
+                a cached version exists.
+
+        Returns:
+            pandas.DataFrame: a denormalized table for interactive use.
+
+        """
+        if update or self._dfs['plants_small_ferc1'] is None:
+            self._dfs['plants_small_ferc1'] = pudl.output.ferc1.plants_small_ferc1(
+                self.pudl_engine)
+        return self._dfs['plants_small_ferc1']
+
+    def plants_hydro_ferc1(self, update=False):
+        """
+        Pull the FERC Form 1 Hydro Plants Table.
+
+        Args:
+            update (bool): If true, re-calculate the output dataframe, even if
+                a cached version exists.
+
+        Returns:
+            pandas.DataFrame: a denormalized table for interactive use.
+
+        """
+        if update or self._dfs['plants_hydro_ferc1'] is None:
+            self._dfs['plants_hydro_ferc1'] = pudl.output.ferc1.plants_hydro_ferc1(
+                self.pudl_engine)
+        return self._dfs['plants_hydro_ferc1']
+
+    def plants_pumped_storage_ferc1(self, update=False):
+        """
+        Pull the FERC Form 1 Pumped Storage Table.
+
+        Args:
+            update (bool): If true, re-calculate the output dataframe, even if
+                a cached version exists.
+
+        Returns:
+            pandas.DataFrame: a denormalized table for interactive use.
+
+        """
+        if update or self._dfs['plants_pumped_storage_ferc1'] is None:
+            self._dfs['plants_pumped_storage_ferc1'] = pudl.output.ferc1.plants_pumped_storage_ferc1(
+                self.pudl_engine)
+        return self._dfs['plants_pumped_storage_ferc1']
+
+    def purchased_power_ferc1(self, update=False):
+        """
+        Pull the FERC Form 1 Purchased Power Table.
+
+        Args:
+            update (bool): If true, re-calculate the output dataframe, even if
+                a cached version exists.
+
+        Returns:
+            pandas.DataFrame: a denormalized table for interactive use.
+
+        """
+        if update or self._dfs['purchased_power_ferc1'] is None:
+            self._dfs['purchased_power_ferc1'] = pudl.output.ferc1.purchased_power_ferc1(
+                self.pudl_engine)
+        return self._dfs['purchased_power_ferc1']
+
+    def plant_in_service_ferc1(self, update=False):
+        """
+        Pull the FERC Form 1 Plant in Service Table.
+
+        Args:
+            update (bool): If true, re-calculate the output dataframe, even if
+                a cached version exists.
+
+        Returns:
+            pandas.DataFrame: a denormalized table for interactive use.
+
+        """
+        if update or self._dfs['plant_in_service_ferc1'] is None:
+            self._dfs['plant_in_service_ferc1'] = pudl.output.ferc1.plant_in_service_ferc1(
+                self.pudl_engine)
+        return self._dfs['plant_in_service_ferc1']
+
+    ###########################################################################
+    # EIA MCOE OUTPUTS
+    ###########################################################################
     def bga(self, update=False):
         """
         Pull the more complete EIA/PUDL boiler-generator associations.
@@ -401,13 +494,12 @@ class PudlTabl(object):
                 a cached version exists.
 
         Returns:
-            :mod:`pandas.DataFrame`: a denormalized table for interactive use.
+            pandas.DataFrame: a denormalized table for interactive use.
 
         """
         if update or self._dfs['bga'] is None:
             self._dfs['bga'] = pudl.output.glue.boiler_generator_assn(
                 self.pudl_engine,
-                self.pt,
                 start_date=self.start_date,
                 end_date=self.end_date)
         return self._dfs['bga']
@@ -421,7 +513,7 @@ class PudlTabl(object):
                 a cached version exists.
 
         Returns:
-            :mod:`pandas.DataFrame`: a denormalized table for interactive use.
+            pandas.DataFrame: a denormalized table for interactive use.
 
         """
         if update or self._dfs['hr_by_gen'] is None:
@@ -438,7 +530,7 @@ class PudlTabl(object):
                 a cached version exists.
 
         Returns:
-            :mod:`pandas.DataFrame`: a denormalized table for interactive use.
+            pandas.DataFrame: a denormalized table for interactive use.
 
         """
         if update or self._dfs['hr_by_unit'] is None:
@@ -455,7 +547,7 @@ class PudlTabl(object):
                 a cached version exists.
 
         Returns:
-            :mod:`pandas.DataFrame`: a denormalized table for interactive use.
+            pandas.DataFrame: a denormalized table for interactive use.
 
         """
         if update or self._dfs['fuel_cost'] is None:
@@ -472,7 +564,7 @@ class PudlTabl(object):
                 a cached version exists.
 
         Returns:
-            :mod:`pandas.DataFrame`: a denormalized table for interactive use.
+            pandas.DataFrame: a denormalized table for interactive use.
 
         """
         if update or self._dfs['capacity_factor'] is None:
@@ -529,5 +621,4 @@ def get_table_meta(pudl_engine):
     """Grab the pudl sqlitie database table metadata."""
     md = sa.MetaData()
     md.reflect(pudl_engine)
-    pt = md.tables
-    return(pt)
+    return md.tables

@@ -9,14 +9,17 @@ functions in here that help with cleaning and restructing dataframes.
 """
 
 import logging
-import os.path
+import pathlib
 import re
+import shutil
 from functools import partial
 
+import addfips
 import numpy as np
 import pandas as pd
 import sqlalchemy as sa
 import timezonefinder
+from sqlalchemy.engine import reflection
 
 import pudl
 import pudl.constants as pc
@@ -34,23 +37,154 @@ sum_na = partial(pd.Series.sum, skipna=False)
 tz_finder = timezonefinder.TimezoneFinder()
 
 
+def add_fips_ids(df, state_col="state", county_col="county", vintage=2015):
+    """Add State and County FIPS IDs to a dataframe."""
+    af = addfips.AddFIPS(vintage=vintage)
+    # Lookup the state and county FIPS IDs and add them to the dataframe:
+    df["state_id_fips"] = df.apply(
+        lambda x: af.get_state_fips(state=x.state), axis=1)
+    logger.info(
+        f"Assigned state FIPS codes for "
+        f"{len(df[df.state_id_fips.notnull()])/len(df):.2%} of records."
+    )
+    df["county_id_fips"] = df.apply(
+        lambda x: af.get_county_fips(state=x.state, county=x.county), axis=1)
+    df["county_id_fips"] = df.county_id_fips.fillna(pd.NA)
+    logger.info(
+        f"Assigned county FIPS codes for "
+        f"{len(df[df.county_id_fips.notnull()])/len(df):.2%} of records."
+    )
+    return df
+
+
+def clean_eia_counties(df, fixes, state_col="state", county_col="county"):
+    """Replace non-standard county names with county nmes from US Census."""
+    df = df.copy()
+    df[county_col] = (
+        df[county_col].str.strip()
+        .str.replace(r"\s+", " ")  # Condense multiple whitespace chars.
+        .str.replace(r"^St ", "St. ")  # Standardize abbreviation.
+        .str.replace(r"^Ste ", "Ste. ")  # Standardize abbreviation.
+        .str.replace("Kent & New Castle", "Kent, New Castle")  # Two counties
+        # Fix ordering, remove comma
+        .str.replace("Borough, Kodiak Island", "Kodiak Island Borough")
+        # Turn comma-separated counties into lists
+        .str.replace(",$", "").str.split(',')
+    )
+    # Create new records for each county in a multi-valued record
+    df = df.explode(county_col)
+    df[county_col] = df[county_col].str.strip()
+    # Yellowstone county is in MT, not WY
+    df.loc[(df[state_col] == "WY") &
+           (df[county_col] == "Yellowstone"), state_col] = "MT"
+    # Replace individual bad county names with identified correct names in fixes:
+    for fix in fixes.itertuples():
+        state_mask = df[state_col] == fix.state
+        county_mask = df[county_col] == fix.eia_county
+        df.loc[state_mask & county_mask, county_col] = fix.fips_county
+    return df
+
+
+def oob_to_nan(df, cols, lb=None, ub=None):
+    """
+    Set non-numeric values and those outside of a given rage to NaN.
+
+    Args:
+        df (pandas.DataFrame): The dataframe containing values to be altered.
+        cols (iterable): Labels of the columns whose values are to be changed.
+        lb: (number): Lower bound, below which values are set to NaN. If None,
+            don't use a lower bound.
+        ub: (number): Upper bound, below which values are set to NaN. If None,
+            don't use an upper bound.
+
+    Returns:
+        pandas.DataFrame: The altered DataFrame.
+
+    """
+    for col in cols:
+        # Force column to be numeric if possible, NaN otherwise:
+        df.loc[:, col] = pd.to_numeric(df[col], errors="coerce")
+        if lb is not None:
+            df.loc[df[col] < lb, col] = np.nan
+        if ub is not None:
+            df.loc[df[col] > ub, col] = np.nan
+
+    return df
+
+
+def prep_dir(dir_path, clobber=False):
+    """
+    Create (or delete and recreate) a directory.
+
+    Args:
+        dir_path (path-like): path to the directory that you are trying to
+            clean and prepare.
+        clobber (bool): If True and dir_path exists, it will be removed and
+            replaced with a new, empty directory.
+
+    Raises:
+        FileExistsError: if a file or directory already exists at dir_path.
+
+    Returns:
+        pathlib.Path: Path to the created directory.
+
+    """
+    dir_path = pathlib.Path(dir_path)
+    if dir_path.exists() and (clobber is False):
+        raise FileExistsError(
+            f'{dir_path} already exists and clobber is set to {clobber}')
+    elif dir_path.exists() and (clobber is True):
+        shutil.rmtree(dir_path)
+    dir_path.mkdir(parents=True)
+    return dir_path
+
+
+def is_doi(doi):
+    """
+    Determine if a string is a valid digital object identifier (DOI).
+
+    Function simply checks whether the offered string matches a regular
+    expresssion -- it doesn't check whether the DOI is actually registered
+    with the relevant authority.
+
+    Args:
+        doi (str): String to validate.
+
+    Returns:
+        bool: True if doi matches the regex for valid DOIs, False otherwise.
+
+    """
+    doi_regex = re.compile(
+        r'(doi:\s*|(?:https?://)?(?:dx\.)?doi\.org/)?(10\.\d+(.\d+)*/.+)$',
+        re.IGNORECASE | re.UNICODE)
+
+    return bool(re.match(doi_regex, doi))
+
+
 def is_annual(df_year, year_col='report_date'):
-    """Determine whether dataframe is consistent with yearly reporting.
+    """
+    Determine whether a DataFrame contains consistent annual time-series data.
 
     Some processes will only work with consistent yearly reporting. This means
     if you have two non-contiguous years of data or the datetime reporting is
-    inconsistent, the process will break.
+    inconsistent, the process will break. This function attempts to infer the
+    temporal frequency of the dataframe, or if that is impossible, to at least
+    see whether the data would be consistent with annual reporting -- e.g. if
+    there is only a single year of data, it should all have the same date, and
+    that date should correspond to January 1st of a given year.
+
+    This function is known to be flaky and needs to be re-written to deal with
+    the edge cases better.
 
     Args:
-        df_year ():
+        df_year (:class:`pandas.DataFrame`): A pandas DataFrame that might
+            contain time-series data at annual resolution.
         year_col (str): The column of the DataFrame in which the year is
             reported.
 
     Returns:
-        bool:
-
-    Todo:
-        Return to for df_year, Returns, assert statements
+        bool: True if df_year is found to be consistent with continuous annual
+        time resolution, False otherwise.
 
     """
     year_index = pd.DatetimeIndex(df_year[year_col].unique()).sort_values()
@@ -107,21 +241,36 @@ def merge_on_date_year(df_date, df_year, on=(), how='inner',
             column with annual resolution.
 
     Returns:
-        :mod:`pandas.DataFrame`: a dataframe with a date column, but no year
+        pandas.DataFrame: a dataframe with a date column, but no year
         columns, and only one copy of any shared columns that were not part of
         the list of columns to be merged on.  The values from df1 are the ones
         which are retained for any shared, non-merging columns
 
-    """
-    assert date_col in df_date.columns.tolist()
-    assert year_col in df_year.columns.tolist()
-    # assert that the annual data is in fact annual:
-    assert is_annual(df_year, year_col=year_col)
+    Raises:
+        ValueError: if the date or year columns are not found, or if the year
+            column is found to be inconsistent with annual reporting.
 
-    # assert that df_date has annual or finer time resolution.
+    TODO: Right mergers will result in null values in the resulting date
+        column. The final output includes the date_col from the date_df and thus
+        if there are any entity records (records being merged on) in the
+        year_df but not in the date_df, a right merge will result in nulls in
+        the date_col. And when we drop the 'year_temp' column, the year from
+        the year_df will be gone. Need to determine how to deal with this.
+        Should we generate a montly record in each year? Should we generate
+        full time serires? Should we restrict right merges in this function?
+
+    """
+    if date_col not in df_date.columns.tolist():
+        raise ValueError(f"Date column {date_col} not found in df_date.")
+    if year_col not in df_year.columns.tolist():
+        raise ValueError(f"Year column {year_col} not found in df_year.")
+    if not is_annual(df_year, year_col=year_col):
+        raise ValueError(f"df_year is not annual, based on column {year_col}.")
+
     first_date = pd.to_datetime(df_date[date_col].min())
     all_dates = pd.DatetimeIndex(df_date[date_col]).unique().sort_values()
-    assert len(all_dates) > 0
+    if not len(all_dates) > 0:
+        raise ValueError("Didn't find any dates in DatetimeIndex.")
     if len(all_dates) > 1:
         if len(all_dates) == 2:
             second_date = all_dates.max()
@@ -129,7 +278,8 @@ def merge_on_date_year(df_date, df_year, on=(), how='inner',
             date_freq = pd.infer_freq(all_dates)
             rng = pd.date_range(start=first_date, periods=2, freq=date_freq)
             second_date = rng[1]
-            assert (second_date - first_date) / pd.Timedelta(days=366) <= 1.0
+            if (second_date - first_date) / pd.Timedelta(days=366) > 1.0:
+                raise ValueError("Consecutive annual dates >1 year apart.")
 
     # Create a temporary column in each dataframe with the year
     df_year = df_year.copy()
@@ -169,9 +319,6 @@ def organize_cols(df, cols):
         DataFrame df, but with cols first, in the same order as they
         were passed in, and the remaining columns sorted alphabetically.
 
-    Todo:
-        Update docstring.
-
     """
     # Generate a list of all the columns in the dataframe that are not
     # included in cols
@@ -181,60 +328,7 @@ def organize_cols(df, cols):
     return df[organized_cols]
 
 
-def extend_annual(df, date_col='report_date', start_date=None, end_date=None):
-    """Extend time range in a DataFrame by duplicating first and last years.
-
-    Takes the earliest year's worth of annual data and uses it to create
-    earlier years by duplicating it, and changing the year.  Similarly,
-    extends a dataset into the future by duplicating the last year's records.
-
-    This is primarily used to extend the EIA860 data about utilities, plants,
-    and generators, so that we can analyze a larger set of EIA923 data. EIA923
-    data has been integrated a bit further back, and the EIA860 data has a year
-    long lag in being released.
-
-    Args:
-        df (pandas.DataFrame):
-        date_col (str):
-        start_date (date):
-        end_date (date):
-
-    Returns:
-        pandas.DataFrame:
-
-    Todo:
-        Return to
-
-    """
-    # assert that df time resolution really is annual
-    assert is_annual(df, year_col=date_col)
-
-    earliest_date = pd.to_datetime(df[date_col].min())
-    if start_date is not None:
-        start_date = pd.to_datetime(start_date)
-        while start_date < earliest_date:
-            prev_year = \
-                df[pd.to_datetime(df[date_col]) == earliest_date].copy()
-            prev_year[date_col] = earliest_date - pd.DateOffset(years=1)
-            df = df.append(prev_year)
-            df[date_col] = pd.to_datetime(df[date_col])
-            earliest_date = pd.to_datetime(df[date_col].min())
-
-    latest_date = pd.to_datetime(df[date_col].max())
-    if end_date is not None:
-        end_date = pd.to_datetime(end_date)
-        while end_date >= latest_date + pd.DateOffset(years=1):
-            next_year = df[pd.to_datetime(df[date_col]) == latest_date].copy()
-            next_year[date_col] = latest_date + pd.DateOffset(years=1)
-            df = df.append(next_year)
-            df[date_col] = pd.to_datetime(df[date_col])
-            latest_date = pd.to_datetime(df[date_col].max())
-
-    df[date_col] = pd.to_datetime(df[date_col])
-    return df
-
-
-def strip_lower(df, columns=None):
+def strip_lower(df, columns):
     """Strip and compact whitespace, lowercase listed DataFrame columns.
 
     First converts all listed columns (if present in df) to string type, then
@@ -247,7 +341,7 @@ def strip_lower(df, columns=None):
             converted to lowercase.
 
     Returns:
-        :mod:`pandas.DataFrame`: The whole DataFrame that was passed in, with
+        pandas.DataFrame: The whole DataFrame that was passed in, with
         the columns cleaned up in place, allowing method chaining.
 
     """
@@ -268,7 +362,7 @@ def cleanstrings_series(col, str_map, unmapped=None, simplify=True):
     """Clean up the strings in a single column/Series.
 
     Args:
-        col (pd.Series): A pandas Series, typically a single column of a
+        col (pandas.Series): A pandas Series, typically a single column of a
             dataframe, containing the freeform strings that are to be cleaned.
         map (dict): A dictionary of lists of strings, in which the keys are the
             simplified canonical strings, witch which each string found in the
@@ -282,8 +376,8 @@ def cleanstrings_series(col, str_map, unmapped=None, simplify=True):
             need to be kept track of.
 
     Returns:
-        :mod:`pandas.Series`: The cleaned up Series / column, suitable for
-        replacng the original messy column in a pd.Dataframe.
+        pandas.Series: The cleaned up Series / column, suitable for
+        replacing the original messy column in a :class:`pandas.DataFrame`.
 
     """
     if simplify:
@@ -324,11 +418,11 @@ def cleanstrings(df, columns, stringmaps, unmapped=None, simplify=True):
     taxonomies.
 
     The function takes and returns a pandas.DataFrame, making it suitable for
-    use with the pd.DataFrame.pipe() method in a chain.
+    use with the :func:`pandas.DataFrame.pipe` method in a chain.
 
     Args:
-        df (pd.DataFrame): the DataFrame containing the string columns to be
-            cleaned up.
+        df (pandas.DataFrame): the DataFrame containing the string columns to
+            be cleaned up.
         columns (list): a list of string column labels found in the column
             index of df. These are the columns that will be cleaned.
         stringmaps (list): a list of dictionaries. The keys of these
@@ -349,9 +443,6 @@ def cleanstrings(df, columns, stringmaps, unmapped=None, simplify=True):
         pandas.Series: The function returns a new pandas series/column that can
         be used to set the values of the original data.
 
-    Todo:
-        Update docstring.
-
     """
     out_df = df.copy()
     for col, str_map in zip(columns, stringmaps):
@@ -367,11 +458,15 @@ def fix_int_na(df, columns, float_na=np.nan, int_na=-1, str_na=''):
     Numpy doesn't have a real NA value for integers. When pandas stores integer
     data which has NA values, it thus upcasts integers to floating point
     values, using np.nan values for NA. However, in order to dump some of our
-    dataframes to CSV files that are suitable for loading into postgres
-    directly, we need to write out integer formatted numbers, with empty
-    strings as the NA value. This function replaces np.nan values with a
-    sentinel value, converts the column to integers, and then to strings,
-    finally replacing the sentinel value with the desired NA string.
+    dataframes to CSV files for use in data packages, we need to write out
+    integer formatted numbers, with empty strings as the NA value. This
+    function replaces np.nan values with a sentinel value, converts the column
+    to integers, and then to strings, finally replacing the sentinel value with
+    the desired NA string.
+
+    This is an interim solution -- now that pandas extension arrays have been
+    implemented, we need to go back through and convert all of these integer
+    columns that contain NA values to Nullable Integer types like Int64.
 
     Args:
         df (pandas.DataFrame): The dataframe to be fixed. This argument allows
@@ -389,9 +484,6 @@ def fix_int_na(df, columns, float_na=np.nan, int_na=-1, str_na=''):
         df (pandas.DataFrame): a new DataFrame, with the selected columns
         converted to strings that look like integers, compatible with
         the postgresql COPY FROM command.
-
-    Todo:
-        Update docstring.
 
     """
     return (
@@ -412,12 +504,13 @@ def month_year_to_date(df):
     construct a new _date column (having the same prefix) and the month/year
     columns are then dropped.
 
-    This function needs to be combined with convert_to_date, and improved:
-     - find and use a _day$ column as well
-     - allow specification of default month & day values, if none are found.
-     - allow specification of lists of year, month, and day columns to be
-       combined, rather than automataically finding all the matching ones.
-     - Do the Right Thing when invalid or NA values are encountered.
+    Todo:
+        This function needs to be combined with convert_to_date, and improved:
+        * find and use a _day$ column as well
+        * allow specification of default month & day values, if none are found.
+        * allow specification of lists of year, month, and day columns to be
+        combined, rather than automataically finding all the matching ones.
+        * Do the Right Thing when invalid or NA values are encountered.
 
     Args:
         df (pandas.DataFrame): The DataFrame in which to convert year/months
@@ -426,9 +519,6 @@ def month_year_to_date(df):
     Returns:
         pandas.DataFrame: A DataFrame in which the year/month fields have been
         converted into Date fields.
-
-    Todo:
-        Update docstring.
 
     """
     df = df.copy()
@@ -484,13 +574,19 @@ def month_year_to_date(df):
 
 
 def convert_to_date(df,
-                    date_col='report_date',
-                    year_col='report_year',
-                    month_col='report_month',
-                    day_col='report_day',
+                    date_col="report_date",
+                    year_col="report_year",
+                    month_col="report_month",
+                    day_col="report_day",
                     month_value=1,
                     day_value=1):
-    """Convert specified year, month or day columns into a datetime object.
+    """
+    Convert specified year, month or day columns into a datetime object.
+
+    If the input ``date_col`` already exists in the input dataframe, then no
+    conversion is applied, and the original dataframe is returned unchanged.
+    Otherwise the constructed date is placed in that column, and the columns
+    which were used to create the date are dropped.
 
     Args:
         df (pandas.DataFrame): dataframe to convert
@@ -537,7 +633,8 @@ def convert_to_date(df,
 
 
 def fix_eia_na(df):
-    """Replace common ill-posed EIA NA spreadsheet values with np.nan.
+    """
+    Replace common ill-posed EIA NA spreadsheet values with np.nan.
 
     Args:
         df (pandas.DataFrame): The DataFrame to clean.
@@ -554,7 +651,8 @@ def fix_eia_na(df):
 
 
 def simplify_columns(df):
-    """Simplify column labels for use as database fields.
+    """
+    Simplify column labels for use as database fields.
 
     This transformation includes:
      - Replacing all non-alphanumeric characters with spaces.
@@ -632,8 +730,6 @@ def find_timezone(*, lng=None, lat=None, state=None, strict=True):
 
 
 def verify_input_files(ferc1_years,  # noqa: C901
-                       eia923_years,
-                       eia860_years,
                        epacems_years,
                        epacems_states,
                        pudl_settings):
@@ -641,8 +737,6 @@ def verify_input_files(ferc1_years,  # noqa: C901
 
     Args:
         ferc1_years (iterable): Years of FERC1 data we're going to import.
-        eia923_years (iterable): Years of EIA923 data we're going to import.
-        eia860_years (iterable): Years of EIA860 data we're going to import.
         epacems_years (iterable): Years of CEMS data we're going to import.
         epacems_states (iterable): States of CEMS data we're going to import.
         data_dir (path-like): Path to the top level of the PUDL datastore.
@@ -650,36 +744,13 @@ def verify_input_files(ferc1_years,  # noqa: C901
     Raises:
         FileNotFoundError: If any of the requested data is missing.
 
-    Todo:
-        Check Docstring.
-
     """
     data_dir = pudl_settings['data_dir']
 
     missing_ferc1_years = {
-        str(y) for y in ferc1_years if not os.path.isfile(
-            pudl.extract.ferc1.dbc_filename(y, data_dir=data_dir))
+        str(y) for y in ferc1_years if not pathlib.Path(
+            pudl.extract.ferc1.dbc_filename(y, data_dir=data_dir)).is_file()
     }
-
-    missing_eia860_years = set()
-    for y in eia860_years:
-        for pattern in pc.files_eia860:
-            f = pc.files_dict_eia860[pattern]
-            try:
-                # This function already looks for the file, and raises an
-                # IndexError if missing
-                pudl.extract.eia860.get_eia860_file(y, f, data_dir=data_dir)
-            except IndexError:
-                missing_eia860_years.add(str(y))
-
-    missing_eia923_years = set()
-    for y in eia923_years:
-        try:
-            f = pudl.extract.eia923.get_eia923_file(y, data_dir=data_dir)
-        except AssertionError:
-            missing_eia923_years.add(str(y))
-        if not os.path.isfile(f):
-            missing_eia923_years.add(str(y))
 
     if epacems_states and list(epacems_states)[0].lower() == 'all':
         epacems_states = list(pc.cems_states.keys())
@@ -688,29 +759,23 @@ def verify_input_files(ferc1_years,  # noqa: C901
         for s in epacems_states:
             for m in range(1, 13):
                 try:
-                    p = pudl.workspace.datastore.path(
+                    p = pathlib.Path(pudl.workspace.datastore.path(
                         source='epacems',
                         year=y,
                         month=m,
                         state=s,
-                        data_dir=data_dir
-                    )
+                        data_dir=data_dir))
                 except AssertionError:
                     missing_epacems_year_states.add((str(y), s))
                     continue
-                if not os.path.isfile(p):
+                if not p.is_file():
                     missing_epacems_year_states.add((str(y), s))
 
-    any_missing = (missing_eia860_years or missing_eia923_years
-                   or missing_ferc1_years or missing_epacems_year_states)
+    any_missing = (missing_ferc1_years or missing_epacems_year_states)
     if any_missing:
         err_msg = ["Missing data files for the following sources and years:"]
         if missing_ferc1_years:
             err_msg += ["  FERC 1:  " + ", ".join(missing_ferc1_years)]
-        if missing_eia860_years:
-            err_msg += ["  EIA 860: " + ", ".join(missing_eia860_years)]
-        if missing_eia923_years:
-            err_msg += ["  EIA 923: " + ", ".join(missing_eia923_years)]
         if missing_epacems_year_states:
             missing_yr_str = ", ".join(
                 {yr_st[0] for yr_st in missing_epacems_year_states})
@@ -722,7 +787,8 @@ def verify_input_files(ferc1_years,  # noqa: C901
         raise FileNotFoundError("\n".join(err_msg))
 
 
-def drop_tables(engine):
+def drop_tables(engine,
+                clobber=False):
     """Drops all tables from a SQLite database.
 
     Creates an sa.schema.MetaData object reflecting the structure of the
@@ -738,9 +804,14 @@ def drop_tables(engine):
 
     Returns:
         None
+
     """
     md = sa.MetaData()
     md.reflect(engine)
+    insp = reflection.Inspector.from_engine(engine)
+    if len(insp.get_table_names()) > 0 and not clobber:
+        raise AssertionError(
+            f'You are attempting to drop your database without setting clobber to {clobber}')
     md.drop_all(engine)
     conn = engine.connect()
     conn.execute("VACUUM")
@@ -753,12 +824,257 @@ def merge_dicts(list_of_dicts):
 
     Given any number of dicts, shallow copy and merge into a new dict,
     precedence goes to key value pairs in latter dicts.
+
     Args:
         dict_args (list): a list of dictionaries.
+
     Returns:
-        dictionary
+        dict
+
     """
     merge_dict = {}
     for dictionary in list_of_dicts:
         merge_dict.update(dictionary)
     return merge_dict
+
+
+def convert_cols_dtypes(df, data_source, name=None):
+    """
+    Convert the data types for a dataframe.
+
+    This function will convert a PUDL dataframe's columns to the correct data
+    type. It uses a dictionary in constants.py called column_dtypes to assign
+    the right type. Within a given data source (e.g. eia923, ferc1) each column
+    name is assumed to *always* have the same data type whenever it is found.
+
+    Boolean type conversions created a special problem, because null values in
+    boolean columns get converted to True (which is bonkers!)... we generally
+    want to preserve the null values and definitely don't want them to be True,
+    so we are keeping those columns as objects and preforming a simple mask for
+    the boolean columns.
+
+    The other exception in here is with the `utility_id_eia` column. It is
+    often an object column of strings. All of the strings are numbers, so it
+    should be possible to convert to :func:`pandas.Int32Dtype` directly, but it
+    is requiring us to convert to int first. There will probably be other
+    columns that have this problem... and hopefully pandas just enables this
+    direct conversion.
+
+    Args:
+        df (pandas.DataFrame): dataframe with columns that appear in the PUDL
+            tables.
+        data_source (str): the name of the datasource (eia, ferc1, etc.)
+        name (str): name of the table (for logging only!)
+
+    Returns:
+        pandas.DataFrame: a dataframe with columns as specified by the
+        :mod:`pudl.constants` ``column_dtypes`` dictionary.
+
+    """
+    # get me all of the columns for the table in the constants dtype dict
+    col_dtypes = {col: col_dtype for col, col_dtype
+                  in pc.column_dtypes[data_source].items()
+                  if col in list(df.columns)}
+
+    # grab only the boolean columns (we only need their names)
+    bool_cols = {col: col_dtype for col, col_dtype
+                 in col_dtypes.items()
+                 if col_dtype == pd.BooleanDtype()}
+    # Grab only the string columns...
+    string_cols = {col: col_dtype for col, col_dtype
+                   in col_dtypes.items()
+                   if col_dtype == pd.StringDtype()}
+
+    # grab all of the non boolean columns
+    non_bool_cols = {col: col_dtype for col, col_dtype
+                     in col_dtypes.items()
+                     if col_dtype != pd.BooleanDtype()}
+
+    # If/when we have the columns exhaustively typed, we can do it like this,
+    # but right now we don't have the FERC columns done, so we can't:
+    # get me all of the columns for the table in the constants dtype dict
+    # col_types = {
+    #    col: pc.column_dtypes[data_source][col] for col in df.columns
+    # }
+    # grab only the boolean columns (we only need their names)
+    # bool_cols = {col for col in col_types if col_types[col] is bool}
+    # grab all of the non boolean columns
+    # non_bool_cols = {
+    #    col: col_types[col] for col in col_types if col_types[col] is not bool
+    # }
+
+    for col in bool_cols:
+        # Bc the og bool values were sometimes coming across as actual bools or
+        # strings, for some reason we need to map both types (I'm not sure
+        # why!). We use na_action to preserve the og NaN's. I've also added in
+        # the string version of a null value bc I am sure it will exist.
+        df[col] = df[col].map({'False': False,
+                               'True': True,
+                               False: False,
+                               True: True,
+                               'nan': pd.NA})
+
+    # For whatever reason, this is more flexible than using the StringDtype
+    for col in string_cols:
+        df[col] = df[col].astype(str)
+
+    if name:
+        logger.info(f'Converting the dtypes of: {name}')
+    # unfortunately, the pd.Int32Dtype() doesn't allow a conversion from object
+    # columns to this nullable int type column. `utility_id_eia` shows up as a
+    # column of strings (!) of numbers so it is an object column, and therefor
+    # needs to be converted beforehand.
+    if 'utility_id_eia' in df.columns:
+        # we want to be able to use this dtype cleaning at many stages, and
+        # sometimes this column has been converted to a float and therefor
+        # we need to skip this conversion
+        if df.utility_id_eia.dtypes is np.dtype('object'):
+            df = df.astype({'utility_id_eia': 'float'})
+    df = (
+        df.astype(non_bool_cols)
+        .astype(bool_cols)
+        .replace(to_replace="<NA>", value={col: pd.NA for col in string_cols})
+        .replace(to_replace="nan", value={col: pd.NA for col in string_cols})
+    )
+    return df
+
+
+def convert_dfs_dict_dtypes(dfs_dict, data_source):
+    """Convert the data types of a dictionary of dataframes.
+
+    This is a wrapper for :func:`pudl.helpers.convert_cols_dtypes` which loops
+    over an entire dictionary of dataframes, assuming they are all from the
+    specified data source, and appropriately assigning data types to each
+    column based on the data source specific type map stored in pudl.constants
+
+    """
+    cleaned_dfs_dict = {}
+    for name, df in dfs_dict.items():
+        cleaned_dfs_dict[name] = convert_cols_dtypes(df, data_source, name)
+    return cleaned_dfs_dict
+
+
+def generate_rolling_avg(df, group_cols, data_col, window, **kwargs):
+    """
+    Generate a rolling average.
+
+    For a given dataframe with a `report_date` column, generate a monthly
+    rolling average and use this rolling average to impute missing values.
+
+    Args:
+        df (pandas.DataFrame): Original dataframe. Must have group_cols
+            column, a data_col column and a 'report_date' column.
+        group_cols (iterable): a list of columns to groupby.
+        data_col (str): the name of the data column.
+        window (int): window from pandas.Series.rolling
+        **kwargs : Additional arguments to pass to
+            :class:`pandas.Series.rolling`.
+
+
+    Returns:
+        pandas.DataFrame
+
+    """
+    df = df.astype({'report_date': 'datetime64[ns]'})
+    # create a full date range for this df
+    date_range = (pd.DataFrame(pd.date_range(
+        start=min(df['report_date']),
+        end=max(df['report_date']), freq='MS',
+        name='report_date')).
+        # assiging a temp column to merge on
+        assign(tmp=1))
+    groups = (df[group_cols + ['report_date']].
+              drop_duplicates().
+              # assiging a temp column to merge on
+              assign(tmp=1))
+    # merge the date range and the groups together
+    # to get the backbone/complete date range/groups
+    bones = (date_range.merge(groups).
+             # drop the temp column
+             drop('tmp', axis=1).
+             # then merge the actual data onto the
+             merge(df, on=group_cols + ['report_date']).
+             set_index(group_cols + ['report_date']).
+             groupby(by=group_cols + ['report_date']).
+             mean())
+    # with the aggregated data, get a rolling average
+    roll = (bones.rolling(window=window, center=True, **kwargs).
+            agg({data_col: 'mean'})
+            )
+    # return the merged
+    return bones.merge(roll,
+                       on=group_cols + ['report_date'],
+                       suffixes=('', '_rolling')).reset_index()
+
+
+def fillna_w_rolling_avg(df_og, group_cols, data_col, window=12, **kwargs):
+    """
+    Filling NaNs with a rolling average.
+
+    Imputes null values from a dataframe on a rolling monthly average. To note,
+    this was designed to work with the PudlTabl object's tables.
+
+    Args:
+        df_og (pandas.DataFrame): Original dataframe. Must have group_cols
+            column, a data_col column and a 'report_date' column.
+        group_cols (iterable): a list of columns to groupby.
+        data_col (str): the name of the data column.
+        window (int): window from pandas.Series.rolling
+        **kwargs : Additional arguments to pass to
+            :class:`pandas.Series.rolling`.
+
+    Returns:
+        pandas.DataFrame: dataframe with nulls filled in.
+
+    """
+    df_og = df_og.astype({'report_date': 'datetime64[ns]'})
+    df_roll = generate_rolling_avg(df_og, group_cols, data_col,
+                                   window, **kwargs)
+    df_roll[data_col] = df_roll[data_col].fillna(
+        df_roll[f'{data_col}_rolling'])
+    df_new = df_og.merge(df_roll,
+                         how='left',
+                         on=group_cols + ['report_date'],
+                         suffixes=('', '_rollfilled'))
+    df_new[data_col] = df_new[data_col].fillna(
+        df_new[f'{data_col}_rollfilled'])
+    return df_new.drop(columns=[f'{data_col}_rollfilled', f'{data_col}_rolling'])
+
+
+def count_records(df, cols, new_count_col_name):
+    """
+    Count the number of unique records in group in a dataframe.
+
+    Args:
+        df (panda.DataFrame) : dataframe you would like to groupby and count.
+        cols (iterable) : list of columns to group and count by.
+        new_count_col_name (string) : the name that will be assigned to the
+            column that will contain the count.
+    Retruns:
+        pandas.DataFrame: dataframe with only the `cols` definted and the
+        `new_count_col_name`.
+    """
+    return (df.assign(count_me=1).
+            groupby(cols).
+            agg({'count_me': 'count'}).
+            reset_index().
+            rename(columns={'count_me': new_count_col_name}))
+
+
+def cleanstrings_snake(df, cols):
+    """
+    Clean the strings in a columns in a dataframe with snake case.
+
+    Args:
+        df (panda.DataFrame) : original dataframe.
+        cols (list): list of columns in `df` to apply snake case to.
+
+    """
+    for col in cols:
+        df.loc[:, col] = (
+            df[col].astype(str).
+            str.strip().
+            str.lower().
+            str.replace(r'\s+', '_')
+        )
+    return df

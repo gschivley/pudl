@@ -1,0 +1,60 @@
+name: pudl-dev
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - autopep8            # dev
+  - bandit              # dev
+  - coloredlogs         # base
+  - coverage            # dev
+  - dask                # user
+  - datapackage>=1.11.0 # base We depend on features introduced in v1.9.0
+  - dbfread             # base
+  - doc8                # dev
+  - flake8              # dev
+  - flake8-colors       # dev
+  - flake8-docstrings   # dev
+  - flake8-builtins     # dev
+  - geopandas           # dev for now
+  - goodtables>=2.4.2   # base
+  - ipdb                # dev
+  - isort               # dev
+  - jedi                # dev
+  - jupyter             # user
+  - jupyterlab          # user
+  - lxml                # dev -- used for pd.read_html
+  - matplotlib          # base
+  - nbdime              # dev
+  - nbval               # dev
+  - networkx>=2.2       # base We depend on features introduced in v2.2
+  - numpy               # base
+  - pandas>=1.0         # base Extensive nullable data type use
+  - pandoc              # dev
+  - pdbpp               # dev
+  - pep8-naming         # dev
+  - pip                 # N/A
+  - pre_commit          # dev
+  - pyarrow>=0.16       # base Nullable pandas types work w/ 0.16 and later
+  - pydocstyle          # dev
+  - pysal               # user (required for making maps w/ geopandas)
+  - pytest              # dev
+  - pytest-cov          # dev
+  - python>=3.8         # N/A zipfile.Path() use requires 3.8
+  - python-snappy       # base
+  - pyyaml              # base
+  - seaborn             # dev
+  - scikit-learn>=0.20  # base pandas integration added in v0.20
+  - scipy               # base
+  - setuptools_scm      # dev
+  - sphinx<3.0          # dev
+  - sphinx-issues       # dev
+  - sphinx_rtd_theme    # dev
+  - sqlalchemy>=1.3.0   # base Security issues below v1.3.0
+  - tableschema>=1.12   # base
+  - tableschema-sql>=1.1.0 # base
+  - timezonefinder      # base
+  - tox                 # dev
+  - twine               # dev
+  - xlsxwriter          # base
+    # - pip:
+      #- recordlinkage # dev for now... base if it ends up in ETL

@@ -33,12 +33,8 @@ def assert_valid_param(source, year,  # noqa: 901
 
     Args:
         source (str): A string indicating which data source we are going to be
-            downloading. Currently it must be one of the following:
-            - 'eia860'
-            - 'eia861'
-            - 'eia923'
-            - 'ferc1'
-            - 'epacems'
+            downloading. Currently it must be one of the following: eia860,
+            eia861, eia923, ferc1, epacems.
         year (int or None): the year for which data should be downloaded. Must
             be within the range of valid data years, which is specified for
             each data source in the pudl.constants module. Use None for data
@@ -47,10 +43,8 @@ def assert_valid_param(source, year,  # noqa: 901
             for EPA CEMS.
         state (str): the state for which data should be downloaded. Only used
             for EPA CEMS.
-        check_month
-
-    Todo:
-        Return to - what is check_month?
+        check_month (bool): Check whether the input month is valid? This is
+            automaticlaly set to True for EPA CEMS.
 
     Raises:
         AssertionError: If the source is not among the list of valid sources.
@@ -178,11 +172,8 @@ def path(source, data_dir,  # noqa: C901
 
     Args:
         source (str): A string indicating which data source we are going to be
-            downloading. Currently it must be one of the following:
-            - 'ferc1'
-            - 'eia923'
-            - 'eia860'
-            - 'epacems'
+            downloading. Currently it must be one of the following: ferc1,
+            eia923, eia860, epacems.
         data_dir (path-like): Path to the top level datastore directory.
         year (int or None): the year of data that the returned path should
             pertain to. Must be within the range of valid data years, which is
@@ -212,6 +203,17 @@ def path(source, data_dir,  # noqa: C901
         dstore_path = os.path.join(data_dir, 'eia', 'form860')
         if year is not None:
             dstore_path = os.path.join(dstore_path, f"eia860{year}")
+    elif source == 'eia861':
+        dstore_path = os.path.join(data_dir, 'eia', 'form861')
+        if year is not None:
+            dstore_path = os.path.join(dstore_path, f"eia861{year}")
+            if year > 2011:
+                folder = f'f861{year}'
+            elif year in list(range(2001, 2006)) + list(range(2007, 2010)):
+                folder = str(year)
+            elif year in list(range(1990, 2001)) + [2006, 2010, 2011]:
+                folder = f'f861{str(year)[-2:]}'
+            dstore_path = os.path.join(dstore_path, folder)
     elif source == 'eia923':
         dstore_path = os.path.join(data_dir, 'eia', 'form923')
         if year is not None:
@@ -262,11 +264,8 @@ def paths_for_year(source, data_dir, year=None, states=None, file=True):
 
     Args:
         source (str): A string indicating which data source we are going to be
-            downloading. Currently it must be one of the following:
-            - 'ferc1'
-            - 'eia923'
-            - 'eia860'
-            - 'epacems'
+            downloading. Currently it must be one of the following: ferc1,
+            eia923, eia860, epacems.
         data_dir (path-like): Path to the top level datastore directory.
         year (int or None): the year of data that the returned path should
             pertain to. Must be within the range of valid data years, which is
@@ -328,9 +327,6 @@ def download(source, year, states, data_dir):
 
     Returns:
         path-like: The path to the local downloaded file.
-
-    Todo:
-        Return to
 
     """
     assert_valid_param(source=source, year=year, check_month=False)
@@ -480,7 +476,7 @@ def _download_default(src_urls, tmp_files, allow_retry=True):
             # URLs are hard-coded in pudl.constants, so we ought to know what
             # we are connecting to. Thus the # nosec comment to avoid the
             # security linter (bandit) from complaining.
-            outfile, _ = urllib.request.urlretrieve(  # nosec
+            _ = urllib.request.urlretrieve(  # nosec
                 src_url, filename=tmp_file)
         except urllib.error.URLError:
             url_to_retry.append(src_url)
@@ -559,6 +555,7 @@ def organize(source, year, states, data_dir,  # noqa: C901
         with zipfile.ZipFile(zip_path, mode='w') as epaipm_zip:
             for f in epaipm_files:
                 epaipm_zip.write(f, arcname=os.path.basename(f))
+                os.remove(f)
     newfiles = [os.path.join(tmpdir, os.path.basename(f))
                 for f in paths_for_year(source=source,
                                         year=year,
@@ -602,10 +599,8 @@ def organize(source, year, states, data_dir,  # noqa: C901
                        for td in ['UPLOADERS', 'FORMSADMIN']]
             for td in topdirs:
                 if os.path.exists(td):
-                    bottomdir = os.path.join(td, 'FORM1', 'working')
-                    tomove = os.listdir(bottomdir)
-                    for fn in tomove:
-                        shutil.move(os.path.join(bottomdir, fn), destdir)
+                    for f in os.scandir(os.path.join(td, 'FORM1', 'working')):
+                        shutil.move(f.path, destdir)
                     shutil.rmtree(td)
 
 
@@ -617,8 +612,8 @@ def check_if_need_update(source, year, states, data_dir, clobber=False):
     and clobber is False.
 
     Args:
-        source (str): the data source to retrieve. Must be one of: 'eia860',
-            'eia923', 'ferc1', or 'epacems'.
+        source (str): the data source to retrieve. Must be one of: eia860,
+            eia923, ferc1, or epacems.
         year (int or None): the year of data that the returned path should
             pertain to. Must be within the range of valid data years, which is
             specified for each data source in pudl.constants.data_years. Note

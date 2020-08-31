@@ -1,12 +1,16 @@
 """Functions for pulling EIA 923 data out of the PUDl DB."""
 
+import logging
+
 import pandas as pd
 import sqlalchemy as sa
 
 import pudl
 
+logger = logging.getLogger(__name__)
 
-def generation_fuel_eia923(pudl_engine, pt, freq=None,
+
+def generation_fuel_eia923(pudl_engine, freq=None,
                            start_date=None, end_date=None):
     """
     Pull records from the generation_fuel_eia923 table in given date range.
@@ -19,15 +23,16 @@ def generation_fuel_eia923(pudl_engine, pt, freq=None,
     fields. Per-unit values are re-calculated based on the aggregated totals.
     Totals are summed across whatever time range is being used, within a
     given plant and fuel type.
-    * ``plant_id_eia``
-    * ``report_date``
-    * ``fuel_type_code_pudl``
-    * ``fuel_consumed_units``
-    * ``fuel_consumed_for_electricity_units``
-    * ``fuel_mmbtu_per_unit``
-    * ``fuel_consumed_mmbtu``
-    * ``fuel_consumed_for_electricity_mmbtu``
-    * ``net_generation_mwh``
+
+    - ``plant_id_eia``
+    - ``report_date``
+    - ``fuel_type_code_pudl``
+    - ``fuel_consumed_units``
+    - ``fuel_consumed_for_electricity_units``
+    - ``fuel_mmbtu_per_unit``
+    - ``fuel_consumed_mmbtu``
+    - ``fuel_consumed_for_electricity_mmbtu``
+    - ``net_generation_mwh``
 
     In addition, plant and utility names and IDs are pulled in from the EIA
     860 tables.
@@ -35,7 +40,6 @@ def generation_fuel_eia923(pudl_engine, pt, freq=None,
     Args:
         pudl_engine (sqlalchemy.engine.Engine): SQLAlchemy connection engine
             for the PUDL DB.
-        pt (immutabledict): a sqlalchemy metadata dictionary of pudl tables
         freq (str): a pandas timeseries offset alias. The original data is
             reported monthly, so the best time frequencies to use here are
             probably month start (freq='MS') and year start (freq='YS').
@@ -51,6 +55,7 @@ def generation_fuel_eia923(pudl_engine, pt, freq=None,
         Generation Fuel table.
 
     """
+    pt = pudl.output.pudltabl.get_table_meta(pudl_engine)
     gf_tbl = pt['generation_fuel_eia923']
     gf_select = sa.sql.select([gf_tbl, ])
     if start_date is not None:
@@ -87,42 +92,40 @@ def generation_fuel_eia923(pudl_engine, pt, freq=None,
         gf_df = gf_df.reset_index()
 
     # Bring in some generic plant & utility information:
-    pu_eia = pudl.output.eia860.plants_utils_eia860(pudl_engine, pt,
+    pu_eia = pudl.output.eia860.plants_utils_eia860(pudl_engine,
                                                     start_date=start_date,
                                                     end_date=end_date)
-    out_df = pudl.helpers.merge_on_date_year(
-        gf_df, pu_eia, on=['plant_id_eia'])
-    # Drop any records where we've failed to get the 860 data merged in...
-    out_df = out_df.dropna(subset=[
-        'plant_id_eia',
-        'plant_id_pudl',
-        'plant_name',
-        'utility_id_eia',
-        'utility_id_pudl',
-        'utility_name',
-    ])
 
     first_cols = ['report_date',
                   'plant_id_eia',
                   'plant_id_pudl',
-                  'plant_name',
+                  'plant_name_eia',
                   'utility_id_eia',
                   'utility_id_pudl',
-                  'utility_name', ]
+                  'utility_name_eia', ]
 
-    out_df = pudl.helpers.organize_cols(out_df, first_cols)
-
-    # Clean up the types of a few columns...
-    out_df['plant_id_eia'] = out_df.plant_id_eia.astype(int)
-    out_df['plant_id_pudl'] = out_df.plant_id_pudl.astype(int)
-    out_df['utility_id_eia'] = out_df.utility_id_eia.astype(int)
-    out_df['utility_id_pudl'] = out_df.utility_id_pudl.astype(int)
+    out_df = (
+        pudl.helpers.merge_on_date_year(gf_df, pu_eia, on=['plant_id_eia'])
+        # Drop any records where we've failed to get the 860 data merged in...
+        .dropna(subset=[
+            'plant_id_eia',
+            'utility_id_eia',
+        ])
+        .pipe(pudl.helpers.organize_cols, first_cols)
+        .astype({
+            "plant_id_eia": "Int64",
+            "plant_id_pudl": "Int64",
+            "utility_id_eia": "Int64",
+            "utility_id_pudl": "Int64",
+        })
+    )
 
     return out_df
 
 
-def fuel_receipts_costs_eia923(pudl_engine, pt, freq=None,
-                               start_date=None, end_date=None):
+def fuel_receipts_costs_eia923(pudl_engine, freq=None,
+                               start_date=None, end_date=None,
+                               rolling=False):
     """
     Pull records from ``fuel_receipts_costs_eia923`` table in given date range.
 
@@ -135,19 +138,20 @@ def fuel_receipts_costs_eia923(pudl_engine, pt, freq=None,
     following fields are preserved, and appropriately summed or re-calculated
     based on the specified aggregation. In both cases, new total values are
     calculated, for total fuel heat content and total fuel cost.
-    * ``plant_id_eia``
-    * ``report_date``
-    * ``fuel_type_code_pudl`` (formerly energy_source_simple)
-    * ``fuel_qty_units`` (sum)
-    * ``fuel_cost_per_mmbtu`` (weighted average)
-    * ``total_fuel_cost`` (sum)
-    * ``total_heat_content_mmbtu`` (sum)
-    * ``heat_content_mmbtu_per_unit`` (weighted average)
-    * ``sulfur_content_pct`` (weighted average)
-    * ``ash_content_pct`` (weighted average)
-    * ``moisture_content_pct`` (weighted average)
-    * ``mercury_content_ppm`` (weighted average)
-    * ``chlorine_content_ppm`` (weighted average)
+
+    - ``plant_id_eia``
+    - ``report_date``
+    - ``fuel_type_code_pudl`` (formerly energy_source_simple)
+    - ``fuel_qty_units`` (sum)
+    - ``fuel_cost_per_mmbtu`` (weighted average)
+    - ``total_fuel_cost`` (sum)
+    - ``total_heat_content_mmbtu`` (sum)
+    - ``heat_content_mmbtu_per_unit`` (weighted average)
+    - ``sulfur_content_pct`` (weighted average)
+    - ``ash_content_pct`` (weighted average)
+    - ``moisture_content_pct`` (weighted average)
+    - ``mercury_content_ppm`` (weighted average)
+    - ``chlorine_content_ppm`` (weighted average)
 
     In addition, plant and utility names and IDs are pulled in from the EIA
     860 tables.
@@ -155,7 +159,6 @@ def fuel_receipts_costs_eia923(pudl_engine, pt, freq=None,
     Args:
         pudl_engine (sqlalchemy.engine.Engine): SQLAlchemy connection engine
             for the PUDL DB.
-        pt (immutabledict): a sqlalchemy metadata dictionary of pudl tables
         freq (str): a pandas timeseries offset alias. The original data is
             reported monthly, so the best time frequencies to use here are
             probably month start (freq='MS') and year start (freq='YS').
@@ -171,6 +174,7 @@ def fuel_receipts_costs_eia923(pudl_engine, pt, freq=None,
         Fuel Receipts and Costs table.
 
     """
+    pt = pudl.output.pudltabl.get_table_meta(pudl_engine)
     # Most of the fields we want come direclty from Fuel Receipts & Costs
     frc_tbl = pt['fuel_receipts_costs_eia923']
     frc_select = sa.sql.select([frc_tbl, ])
@@ -195,6 +199,20 @@ def fuel_receipts_costs_eia923(pudl_engine, pt, freq=None,
 
     cols_to_drop = ['id', 'mine_id_pudl']
     frc_df = frc_df.drop(cols_to_drop, axis=1)
+
+    # this next step smoothes fuel_cost_per_mmbtu as a rolling monthly average.
+    # for each month where there is any data make weighted averages of each
+    # plant/fuel/month.
+    if rolling is True:
+        logger.info('filling in fuel cost NaNs with rolling averages')
+        frc_df = pudl.helpers.fillna_w_rolling_avg(
+            frc_df,
+            group_cols=['plant_id_eia', 'energy_source_code'],
+            data_col='fuel_cost_per_mmbtu',
+            window=12,
+            min_periods=6,
+            win_type='triang'
+        )
 
     # Calculate a few totals that are commonly needed:
     frc_df['total_heat_content_mmbtu'] = \
@@ -251,40 +269,41 @@ def fuel_receipts_costs_eia923(pudl_engine, pt, freq=None,
                               'total_mercury_content'], axis=1)
 
     # Bring in some generic plant & utility information:
-    pu_eia = pudl.output.eia860.plants_utils_eia860(pudl_engine, pt,
+    pu_eia = pudl.output.eia860.plants_utils_eia860(pudl_engine,
                                                     start_date=start_date,
                                                     end_date=end_date)
-    out_df = pudl.helpers.merge_on_date_year(
-        frc_df, pu_eia, on=['plant_id_eia'])
 
-    # Drop any records where we've failed to get the 860 data merged in...
-    out_df = out_df.dropna(subset=['utility_id_eia', 'utility_name'])
+    out_df = (
+        pudl.helpers.merge_on_date_year(frc_df, pu_eia, on=['plant_id_eia'])
+        .dropna(subset=['utility_id_eia'])
+        .pipe(
+            pudl.helpers.organize_cols,
+            cols=[
+                'report_date',
+                'plant_id_eia',
+                'plant_id_pudl',
+                'plant_name_eia',
+                'utility_id_eia',
+                'utility_id_pudl',
+                'utility_name_eia',
+            ]
+        )
+        .astype({
+            "plant_id_eia": "Int64",
+            "plant_id_pudl": "Int64",
+            "utility_id_eia": "Int64",
+            "utility_id_pudl": "Int64",
+        })
+    )
 
     if freq is None:
         # There are a couple of invalid records with no specified fuel.
         out_df = out_df.dropna(subset=['fuel_group_code'])
 
-    first_cols = ['report_date',
-                  'plant_id_eia',
-                  'plant_id_pudl',
-                  'plant_name',
-                  'utility_id_eia',
-                  'utility_id_pudl',
-                  'utility_name', ]
-
-    # Re-arrange the columns for easier readability:
-    out_df = pudl.helpers.organize_cols(out_df, first_cols)
-
-    # Clean up the types of a few columns...
-    out_df['plant_id_eia'] = out_df.plant_id_eia.astype(int)
-    out_df['plant_id_pudl'] = out_df.plant_id_pudl.astype(int)
-    out_df['utility_id_eia'] = out_df.utility_id_eia.astype(int)
-    out_df['utility_id_pudl'] = out_df.utility_id_pudl.astype(int)
-
     return out_df
 
 
-def boiler_fuel_eia923(pudl_engine, pt, freq=None,
+def boiler_fuel_eia923(pudl_engine, freq=None,
                        start_date=None, end_date=None):
     """
     Pull records from the boiler_fuel_eia923 table in a given data range.
@@ -297,6 +316,7 @@ def boiler_fuel_eia923(pudl_engine, pt, freq=None,
     fields. Per-unit values are re-calculated based on the aggregated totals.
     Totals are summed across whatever time range is being used, within a
     given plant and fuel type.
+
     * ``fuel_consumed_units`` (sum)
     * ``fuel_mmbtu_per_unit`` (weighted average)
     * ``total_heat_content_mmbtu`` (sum)
@@ -309,7 +329,6 @@ def boiler_fuel_eia923(pudl_engine, pt, freq=None,
     Args:
         pudl_engine (sqlalchemy.engine.Engine): SQLAlchemy connection engine
             for the PUDL DB.
-        pt (immutabledict): a sqlalchemy metadata dictionary of pudl tables
         freq (str): a pandas timeseries offset alias. The original data is
             reported monthly, so the best time frequencies to use here are
             probably month start (freq='MS') and year start (freq='YS').
@@ -325,6 +344,7 @@ def boiler_fuel_eia923(pudl_engine, pt, freq=None,
         Boiler Fuel table.
 
     """
+    pt = pudl.output.pudltabl.get_table_meta(pudl_engine)
     bf_eia923_tbl = pt['boiler_fuel_eia923']
     bf_eia923_select = sa.sql.select([bf_eia923_tbl, ])
     if start_date is not None:
@@ -364,55 +384,47 @@ def boiler_fuel_eia923(pudl_engine, pt, freq=None,
             'total_ash_content': pudl.helpers.sum_na,
         })
 
-        bf_df['fuel_mmbtu_per_unit'] = \
-            bf_df['total_heat_content_mmbtu'] / bf_df['fuel_consumed_units']
-        bf_df['sulfur_content_pct'] = \
-            bf_df['total_sulfur_content'] / bf_df['fuel_consumed_units']
-        bf_df['ash_content_pct'] = \
-            bf_df['total_ash_content'] / bf_df['fuel_consumed_units']
+        bf_df['fuel_mmbtu_per_unit'] = bf_df['total_heat_content_mmbtu'] / \
+            bf_df['fuel_consumed_units']
+        bf_df['sulfur_content_pct'] = bf_df['total_sulfur_content'] / \
+            bf_df['fuel_consumed_units']
+        bf_df['ash_content_pct'] = bf_df['total_ash_content'] / \
+            bf_df['fuel_consumed_units']
         bf_df = bf_df.reset_index()
         bf_df = bf_df.drop(['total_ash_content', 'total_sulfur_content'],
                            axis=1)
 
     # Grab some basic plant & utility information to add.
-    pu_eia = pudl.output.eia860.plants_utils_eia860(pudl_engine, pt,
+    pu_eia = pudl.output.eia860.plants_utils_eia860(pudl_engine,
                                                     start_date=start_date,
                                                     end_date=end_date)
-    out_df = pudl.helpers.merge_on_date_year(
-        bf_df, pu_eia, on=['plant_id_eia'])
+    out_df = (
+        pudl.helpers.merge_on_date_year(bf_df, pu_eia, on=['plant_id_eia'])
+        .dropna(subset=['plant_id_eia', 'utility_id_eia', 'boiler_id'])
+        .pipe(pudl.helpers.organize_cols,
+              cols=['report_date',
+                    'plant_id_eia',
+                    'plant_id_pudl',
+                    'plant_name_eia',
+                    'utility_id_eia',
+                    'utility_id_pudl',
+                    'utility_name_eia',
+                    'boiler_id'])
+        .astype({
+            'plant_id_eia': "Int64",
+            'plant_id_pudl': "Int64",
+            'utility_id_eia': "Int64",
+            'utility_id_pudl': "Int64",
+        })
+    )
+
     if freq is None:
         out_df = out_df.drop(['id'], axis=1)
-
-    out_df = out_df.dropna(subset=[
-        'plant_id_eia',
-        'plant_id_pudl',
-        'utility_id_eia',
-        'utility_id_pudl',
-        'boiler_id',
-    ])
-
-    first_cols = [
-        'report_date',
-        'plant_id_eia',
-        'plant_id_pudl',
-        'plant_name',
-        'utility_id_eia',
-        'utility_id_pudl',
-        'utility_name',
-        'boiler_id',
-    ]
-
-    # Re-arrange the columns for easier readability:
-    out_df = pudl.helpers.organize_cols(out_df, first_cols)
-
-    out_df['utility_id_eia'] = out_df.utility_id_eia.astype(int)
-    out_df['utility_id_pudl'] = out_df.utility_id_pudl.astype(int)
-    out_df['plant_id_pudl'] = out_df.plant_id_pudl.astype(int)
 
     return out_df
 
 
-def generation_eia923(pudl_engine, pt, freq=None,
+def generation_eia923(pudl_engine, freq=None,
                       start_date=None, end_date=None):
     """
     Pull records from the boiler_fuel_eia923 table in a given data range.
@@ -420,7 +432,6 @@ def generation_eia923(pudl_engine, pt, freq=None,
     Args:
         pudl_engine (sqlalchemy.engine.Engine): SQLAlchemy connection engine
             for the PUDL DB.
-        pt (immutabledict): a sqlalchemy metadata dictionary of pudl tables
         freq (str): a pandas timeseries offset alias. The original data is
             reported monthly, so the best time frequencies to use here are
             probably month start (freq='MS') and year start (freq='YS').
@@ -436,6 +447,7 @@ def generation_eia923(pudl_engine, pt, freq=None,
         Generation table.
 
     """
+    pt = pudl.output.pudltabl.get_table_meta(pudl_engine)
     g_eia923_tbl = pt['generation_eia923']
     g_eia923_select = sa.sql.select([g_eia923_tbl, ])
     if start_date is not None:
@@ -459,41 +471,33 @@ def generation_eia923(pudl_engine, pt, freq=None,
             {'net_generation_mwh': pudl.helpers.sum_na}).reset_index()
 
     # Grab EIA 860 plant and utility specific information:
-    pu_eia = pudl.output.eia860.plants_utils_eia860(pudl_engine, pt,
+    pu_eia = pudl.output.eia860.plants_utils_eia860(pudl_engine,
                                                     start_date=start_date,
                                                     end_date=end_date)
 
     # Merge annual plant/utility data in with the more granular dataframe
-    out_df = pudl.helpers.merge_on_date_year(g_df, pu_eia, on=['plant_id_eia'])
+    out_df = (
+        pudl.helpers.merge_on_date_year(g_df, pu_eia, on=['plant_id_eia'])
+        .dropna(subset=['plant_id_eia', 'utility_id_eia', 'generator_id'])
+        .pipe(pudl.helpers.organize_cols, cols=[
+            'report_date',
+            'plant_id_eia',
+            'plant_id_pudl',
+            'plant_name_eia',
+            'utility_id_eia',
+            'utility_id_pudl',
+            'utility_name_eia',
+            'generator_id',
+        ])
+        .astype({
+            "plant_id_eia": "Int64",
+            "plant_id_pudl": "Int64",
+            "utility_id_eia": "Int64",
+            "utility_id_pudl": "Int64",
+        })
+    )
 
     if freq is None:
         out_df = out_df.drop(['id'], axis=1)
-
-    # These ID fields are vital -- without them we don't have a complete record
-    out_df = out_df.dropna(subset=[
-        'plant_id_eia',
-        'plant_id_pudl',
-        'utility_id_eia',
-        'utility_id_pudl',
-        'generator_id',
-    ])
-
-    first_cols = [
-        'report_date',
-        'plant_id_eia',
-        'plant_id_pudl',
-        'plant_name',
-        'utility_id_eia',
-        'utility_id_pudl',
-        'utility_name',
-        'generator_id',
-    ]
-
-    # Re-arrange the columns for easier readability:
-    out_df = pudl.helpers.organize_cols(out_df, first_cols)
-
-    out_df['utility_id_eia'] = out_df.utility_id_eia.astype(int)
-    out_df['utility_id_pudl'] = out_df.utility_id_pudl.astype(int)
-    out_df['plant_id_pudl'] = out_df.plant_id_pudl.astype(int)
 
     return out_df

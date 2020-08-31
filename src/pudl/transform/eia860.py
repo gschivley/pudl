@@ -28,30 +28,36 @@ def ownership(eia860_dfs, eia860_transformed_dfs):
         which pages from EIA860 form (keys) correspond to normalized
         DataFrames of values from that page (values)
 
-    Todo:
-        Convert assert statement to AssertionError
-
     """
-    o_df = eia860_dfs['ownership'].copy()
-
-    # Replace '.' and ' ' with NaN in order to read in integer values
-    o_df = pudl.helpers.fix_eia_na(o_df)
-
-    o_df = pudl.helpers.convert_to_date(o_df)
+    o_df = (
+        eia860_dfs['ownership'].copy()
+        .pipe(pudl.helpers.fix_eia_na)
+        .pipe(pudl.helpers.convert_to_date)
+    )
 
     # The fix we're making here is only known to be valid for 2011 -- if we
     # get older data... then we need to to revisit the cleaning function and
     # make sure it also applies to those earlier years.
-    assert min(o_df.report_date.dt.year) >= 2011
+    if min(o_df.report_date.dt.year) < min(pc.working_years["eia860"]):
+        raise ValueError(
+            f"EIA 860 transform step is only known to work for "
+            f"year {min(pc.working_years['eia860'])} and later, but found data "
+            f"from year {min(o_df.report_date.dt.year)}."
+        )
 
     # Prior to 2012, ownership was reported as a percentage, rather than
     # as a proportion, so we need to divide those values by 100.
-    o_df.loc[o_df.report_date.dt.year == 2011, 'fraction_owned'] = \
-        o_df.loc[o_df.report_date.dt.year == 2011, 'fraction_owned'] / 100
+    o_df.loc[o_df.report_date.dt.year < 2012, 'fraction_owned'] = \
+        o_df.loc[o_df.report_date.dt.year < 2012, 'fraction_owned'] / 100
 
-    o_df['owner_utility_id_eia'] = o_df['owner_utility_id_eia'].astype(int)
-    o_df['utility_id_eia'] = o_df['utility_id_eia'].astype(int)
-    o_df['plant_id_eia'] = o_df['plant_id_eia'].astype(int)
+    o_df = (
+        o_df.astype({
+            "owner_utility_id_eia": pd.Int64Dtype(),
+            "utility_id_eia": pd.Int64Dtype(),
+            "plant_id_eia": pd.Int64Dtype(),
+            "owner_state": pd.StringDtype()
+        })
+    )
 
     eia860_transformed_dfs['ownership_eia860'] = o_df
 
@@ -64,7 +70,7 @@ def generators(eia860_dfs, eia860_transformed_dfs):
 
     There are three tabs that the generator records come from (proposed,
     existing, and retired). We pull each tab into one dataframe and include
-    an 'operational_status' to indicate which tab the record came from.
+    an ``operational_status`` to indicate which tab the record came from.
 
     Args:
         eia860_dfs (dict): Each entry in this
@@ -95,13 +101,11 @@ def generators(eia860_dfs, eia860_transformed_dfs):
     ge_df['operational_status'] = 'existing'
     gr_df['operational_status'] = 'retired'
 
-    gens_df = pd.concat([ge_df, gp_df, gr_df], sort=True)
-
-    # Get rid of any unidentifiable records:
-    gens_df.dropna(subset=['generator_id', 'plant_id_eia'], inplace=True)
-
-    # Replace empty strings, whitespace, and '.' fields with real NA values
-    gens_df = pudl.helpers.fix_eia_na(gens_df)
+    gens_df = (
+        pd.concat([ge_df, gp_df, gr_df], sort=True)
+        .dropna(subset=['generator_id', 'plant_id_eia'])
+        .pipe(pudl.helpers.fix_eia_na)
+    )
 
     # A subset of the columns have zero values, where NA is appropriate:
     columns_to_fix = [
@@ -136,10 +140,10 @@ def generators(eia860_dfs, eia860_transformed_dfs):
 
     gens_df.duct_burners = \
         gens_df.duct_burners.replace(to_replace='X', value='N')
-    gens_df.heat_bypass_recovery = \
-        gens_df.heat_bypass_recovery.replace(to_replace='X', value='N')
+    gens_df.bypass_heat_recovery = \
+        gens_df.bypass_heat_recovery.replace(to_replace='X', value='N')
     gens_df.syncronized_transmission_grid = \
-        gens_df.heat_bypass_recovery.replace(to_replace='X', value='N')
+        gens_df.bypass_heat_recovery.replace(to_replace='X', value='N')
 
     # A subset of the columns have "U" values, presumably for "Unknown," which
     # must be set to None in order to convert the columns to datatype Boolean.
@@ -165,7 +169,7 @@ def generators(eia860_dfs, eia860_transformed_dfs):
         'other_combustion_tech',
         'cofire_fuels',
         'switch_oil_gas',
-        'heat_bypass_recovery',
+        'bypass_heat_recovery',
         'associated_combined_heat_power',
         'planned_modifications',
         'other_planned_modifications',
@@ -174,9 +178,13 @@ def generators(eia860_dfs, eia860_transformed_dfs):
     ]
 
     for column in boolean_columns_to_fix:
-        gens_df[column] = gens_df[column].fillna('False')
-        gens_df[column] = gens_df[column].replace(
-            to_replace=["Y", "N"], value=[True, False])
+        gens_df[column] = (
+            gens_df[column]
+            .fillna("NaN")
+            .replace(
+                to_replace=["Y", "N", "NaN"],
+                value=[True, False, pd.NA])
+        )
 
     gens_df = (
         gens_df.
@@ -189,6 +197,7 @@ def generators(eia860_dfs, eia860_transformed_dfs):
         astype({
             'plant_id_eia': int,
             'generator_id': str,
+            'unit_id_eia': str,
             'utility_id_eia': int
         }).
         pipe(pudl.helpers.convert_to_date)
@@ -224,13 +233,24 @@ def plants(eia860_dfs, eia860_transformed_dfs):
 
     """
     # Populating the 'plants_eia860' table
-    p_df = eia860_dfs['plant'].copy()
+    p_df = (
+        eia860_dfs['plant'].copy()
+        .pipe(pudl.helpers.fix_eia_na)
+        .astype({"zip_code": str})
+        .drop("iso_rto", axis="columns")
+    )
 
-    # Replace empty strings, whitespace, and '.' fields with real NA values
-    p_df = pudl.helpers.fix_eia_na(p_df)
-
-    # Cast values in zip_code to strings to avoid type errors
-    p_df['zip_code'] = p_df['zip_code'].astype(str)
+    # Spelling, punctuation, and capitalization of county names can vary from
+    # year to year. We homogenize them here to facilitate correct value
+    # harvesting.
+    p_df['county'] = (
+        p_df.county.
+        str.replace(r'[^a-z,A-Z]+', ' ').
+        str.strip().
+        str.lower().
+        str.replace(r'\s+', ' ').
+        str.title()
+    )
 
     # A subset of the columns have "X" values, where other columns_to_fix
     # have "N" values. Replacing these values with "N" will make for uniform
@@ -244,28 +264,39 @@ def plants(eia860_dfs, eia860_transformed_dfs):
         p_df.liquefied_natural_gas_storage.replace(to_replace='X', value='N')
 
     boolean_columns_to_fix = [
-        'ferc_cogen_status',
-        'ferc_small_power_producer',
-        'ferc_exempt_wholesale_generator',
-        'ash_impoundment',
-        'ash_impoundment_lined',
-        'energy_storage',
-        'natural_gas_storage',
-        'liquefied_natural_gas_storage'
+        "ferc_cogen_status",
+        "ferc_small_power_producer",
+        "ferc_exempt_wholesale_generator",
+        "ash_impoundment",
+        "ash_impoundment_lined",
+        "energy_storage",
+        "natural_gas_storage",
+        "liquefied_natural_gas_storage",
+        "net_metering",
     ]
 
     for column in boolean_columns_to_fix:
-        p_df[column] = p_df[column].fillna('False')
-        p_df[column] = p_df[column].replace(
-            to_replace=["Y", "N"], value=[True, False])
+        p_df[column] = (
+            p_df[column]
+            .fillna("NaN")
+            .replace(
+                to_replace=["Y", "N", "NaN"],
+                value=[True, False, pd.NA])
+        )
 
     # Ensure plant & operator IDs are integers.
-    p_df['plant_id_eia'] = p_df['plant_id_eia'].astype(int)
-    p_df['utility_id_eia'] = p_df['utility_id_eia'].astype(int)
-    p_df['primary_purpose_naics_id'] = p_df['primary_purpose_naics_id'].astype(
-        int)
-
-    p_df = pudl.helpers.convert_to_date(p_df)
+    p_df = (
+        p_df.astype({
+            "plant_id_eia": int,
+            "utility_id_eia": int,
+            "primary_purpose_naics_id": "Int64",
+            "ferc_cogen_docket_no": str,
+            "ferc_exempt_wholesale_generator_docket_no": str,
+            "ferc_small_power_producer_docket_no": str,
+            "street_address": str,
+        })
+        .pipe(pudl.helpers.convert_to_date)
+    )
 
     eia860_transformed_dfs['plants_eia860'] = p_df
 
@@ -361,20 +392,25 @@ def utilities(eia860_dfs, eia860_transformed_dfs):
     ]
 
     for column in boolean_columns_to_fix:
-        u_df[column] = u_df[column].fillna('False')
-        u_df[column] = u_df[column].replace(
-            to_replace=["Y", "N"], value=[True, False])
+        u_df[column] = (
+            u_df[column]
+            .fillna("NaN")
+            .replace(
+                to_replace=["Y", "N", "NaN"],
+                value=[True, False, pd.NA])
+        )
 
-    u_df = pudl.helpers.convert_to_date(u_df)
-
-    u_df['utility_id_eia'] = u_df['utility_id_eia'].astype(int)
+    u_df = (
+        u_df.astype({"utility_id_eia": int})
+        .pipe(pudl.helpers.convert_to_date)
+    )
 
     eia860_transformed_dfs['utilities_eia860'] = u_df
 
     return eia860_transformed_dfs
 
 
-def transform(eia860_raw_dfs, eia860_tables=pc.eia860_pudl_tables):
+def transform(eia860_raw_dfs, eia860_tables=pc.pudl_tables["eia860"]):
     """
     Transforms EIA 860 DataFrames.
 

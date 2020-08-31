@@ -4,7 +4,7 @@ PyTest based testing of the FERC Database & PUDL data package initializations.
 This module also contains fixtures for returning connections to the databases.
 These connections can be either to the live databases for post-ETL testing or
 to new temporary databases, which are created from scratch and dropped after
-the tests have completed. See the --live_ferc_db and --live_pudl_db command
+the tests have completed. See the --live_ferc1_db and --live_pudl_db command
 line options by running pytest --help. If you are using live databases, you
 will need to tell PUDL where to find them with --pudl_in=<PUDL_IN>.
 
@@ -21,66 +21,48 @@ from pudl.convert.epacems_to_parquet import epacems_to_parquet
 logger = logging.getLogger(__name__)
 
 
-@pytest.mark.etl
-@pytest.mark.data_package
-def test_data_packaging(data_packaging):
+@pytest.mark.datapkg
+def test_datapkg_bundle(datapkg_bundle):
     """Generate limited packages for testing."""
     pass
 
 
-@pytest.mark.data_package
-def test_data_packaging_to_sqlite(data_packaging_to_sqlite):
-    """Try flattening the data packages."""
+@pytest.mark.datapkg
+def test_pudl_engine(pudl_engine):
+    """Try creating a pudl_engine...."""
     pass
 
 
-@pytest.mark.etl
-@pytest.mark.ferc1
-def test_ferc1_init_db(ferc1_engine):
+def test_ferc1_etl(ferc1_engine):
     """
-    Create a fresh FERC Form 1 DB and attempt to access it.
-
-    If we are doing ETL (ingest) testing, then these databases are populated
-    anew, in their *_test form.  If we're doing post-ETL (post-ingest) testing
-    then we just grab a connection to the existing DB.
+    Create a fresh FERC Form 1 SQLite DB and attempt to access it.
 
     Nothing needs to be in the body of this "test" because the database
-    connections are created by the fixtures defined in conftest.py
+    connections are created by the ferc1_engine fixture defined in conftest.py
     """
     pass
 
 
-def test_pudl_init_db(ferc1_engine, pudl_engine):
-    """
-    Create a fresh PUDL DB and pull in some FERC1 & EIA data.
-
-    If we are doing ETL (ingest) testing, then these databases are populated
-    anew, in their *_test form.  If we're doing post-ETL (post-ingest) testing
-    then we just grab a connection to the existing DB.
-
-    Nothing needs to be in the body of this "test" because the database
-    connections are created by the fixtures defined in conftest.py
-    """
-    pass
-
-
-@pytest.mark.xfail
-@pytest.mark.etl
-def test_epacems_to_parquet(data_packaging,
+def test_epacems_to_parquet(datapkg_bundle,
                             pudl_settings_fixture,
                             data_scope,
-                            fast_tests):
+                            request):
     """Attempt to convert a small amount of EPA CEMS data to parquet format."""
+    clobber = request.config.getoption("--clobber")
+    epacems_datapkg_json = pathlib.Path(
+        pudl_settings_fixture['datapkg_dir'],
+        data_scope['datapkg_bundle_name'],
+        'epacems-eia-test',
+        "datapackage.json"
+    )
+    logger.info(f"Loading epacems from {epacems_datapkg_json}")
     epacems_to_parquet(
+        datapkg_path=epacems_datapkg_json,
         epacems_years=data_scope['epacems_years'],
         epacems_states=data_scope['epacems_states'],
-        data_dir=pudl_settings_fixture['data_dir'],
         out_dir=pathlib.Path(pudl_settings_fixture['parquet_dir'], 'epacems'),
-        pkg_dir=pathlib.Path(
-            pudl_settings_fixture['datapackage_dir'],
-            data_scope['pkg_bundle_name'], 'epacems_eia860'
-        ),
-        compression='snappy'
+        compression='snappy',
+        clobber=clobber
     )
 
 
@@ -93,9 +75,6 @@ def test_ferc1_lost_data(pudl_settings_fixture, data_scope):
     definition, based on the given reference year and our compilation of the
     DBF filename to table name mapping from 2015, includes every single table
     and field that appears in the historical FERC Form 1 data.
-
-    Needs live_ferc1_db..?
-
     """
     refyear = max(data_scope['ferc1_years'])
     current_dbc_map = pudl.extract.ferc1.get_dbc_map(
@@ -137,20 +116,18 @@ def test_ferc1_lost_data(pudl_settings_fixture, data_scope):
                     )
 
 
-@pytest.mark.etl
-@pytest.mark.ferc1
-def test_only_ferc1_pudl_init_db(datastore_fixture,
-                                 pudl_settings_fixture,
-                                 live_ferc_db):
+def test_ferc1_solo_etl(datastore_fixture,
+                        pudl_settings_fixture,
+                        ferc1_engine,
+                        live_ferc1_db):
     """Verify that a minimal FERC Form 1 can be loaded without other data."""
-    test_dir = pathlib.Path(__file__).parent
-    with open(pathlib.Path(test_dir, 'settings',
-                           'settings_datapackage_ferc1_only.yml'),
-              "r") as f:
-        pkg_settings = yaml.safe_load(f)['pkg_bundle_settings']
+    with open(pathlib.Path(
+            pathlib.Path(__file__).parent,
+            'settings', 'ferc1-solo.yml'), "r") as f:
+        datapkg_settings = yaml.safe_load(f)['datapkg_bundle_settings']
 
-    pudl.etl.generate_data_packages(
-        pkg_settings,
+    pudl.etl.generate_datapkg_bundle(
+        datapkg_settings,
         pudl_settings_fixture,
-        pkg_bundle_name='ferc_only_test',
+        datapkg_bundle_name='ferc1-solo',
         clobber=True)
